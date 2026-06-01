@@ -5,7 +5,7 @@ mod subcmd;
 mod words;
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use cli::Cli;
 
 fn main() -> Result<()> {
@@ -40,6 +40,13 @@ fn main() -> Result<()> {
             err.exit();
         }
     };
+
+    if cli.command.is_none() {
+        output::print_banner();
+        Cli::command().print_help()?;
+        println!();
+        return Ok(());
+    }
 
     // compio thread-per-core runtime: single OS thread, one io_uring /
     // IOCP / kqueue completion queue, no work-stealing scheduler.

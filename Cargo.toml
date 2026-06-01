@@ -8,7 +8,7 @@ edition = "2024"
 authors = ["ShiinaSaku"]
 license = "MIT"
 repository = "https://github.com/ShiinaSaku/Hayate"
-rust-version = "1.96"
+rust-version = "1.95"
 
 [workspace.dependencies]
 # async runtime: thread-per-core, io_uring / IOCP / kqueue

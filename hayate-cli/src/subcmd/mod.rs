@@ -8,7 +8,7 @@ use crate::cli::{Cli, Command};
 
 /// Top-level dispatcher.
 pub async fn dispatch(cli: Cli) -> Result<()> {
-    match cli.command {
+    match cli.command.expect("command is checked before dispatch") {
         Command::Receive(args) => receive::run(args).await,
         Command::Send(args) => send::run(args).await,
         Command::Discover(args) => discover::run(args).await,

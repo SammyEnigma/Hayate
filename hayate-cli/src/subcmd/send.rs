@@ -13,11 +13,13 @@ use hayate_engine::{
 use crate::{cli::SendArgs, output};
 
 pub async fn run(args: SendArgs) -> Result<()> {
-    output::print_banner();
-
     let path = &args.path;
     if !path.exists() {
         bail!("Path does not exist: {}", path.display());
+    }
+
+    if args.peer.is_some() && args.target.is_some() {
+        bail!("pass either TARGET or --peer, not both");
     }
 
     let target = args.peer.as_ref().or(args.target.as_ref());
@@ -41,9 +43,23 @@ pub async fn run(args: SendArgs) -> Result<()> {
         output::info(&format!("Connecting to {target_addr}..."));
 
         let endpoint = network::bind_client().await?;
-        let conn = endpoint
-            .connect(target_addr, "hayate.local", Some(network::client_config()?))?
-            .await?;
+        let client_config = network::client_config()?;
+        let spinner = if args.no_progress {
+            None
+        } else {
+            let spinner = output::spinner("Connecting");
+            spinner.set_message(target_addr.to_string());
+            Some(spinner)
+        };
+        let conn_result: Result<_> =
+            match endpoint.connect(target_addr, "hayate.local", Some(client_config)) {
+                Ok(connecting) => connecting.await.map_err(Into::into),
+                Err(e) => Err(e.into()),
+            };
+        if let Some(spinner) = &spinner {
+            spinner.finish_and_clear();
+        }
+        let conn = conn_result?;
         (conn, args.code.clone())
     } else {
         if print_instruction {
@@ -69,11 +85,34 @@ pub async fn run(args: SendArgs) -> Result<()> {
         })
         .detach();
 
+        let spinner = if args.no_progress {
+            None
+        } else {
+            let spinner = output::spinner("Pairing");
+            spinner.set_message("waiting for receiver");
+            Some(spinner)
+        };
         let incoming = endpoint
             .wait_incoming()
             .await
-            .context("endpoint closed while waiting for pairing")?;
-        let conn = incoming.await?;
+            .context("endpoint closed while waiting for pairing");
+        let incoming = match incoming {
+            Ok(incoming) => incoming,
+            Err(e) => {
+                if let Some(spinner) = &spinner {
+                    spinner.finish_and_clear();
+                }
+                return Err(e);
+            }
+        };
+        if let Some(spinner) = &spinner {
+            spinner.set_message("receiver connected");
+        }
+        let conn_result = incoming.await;
+        if let Some(spinner) = &spinner {
+            spinner.finish_and_clear();
+        }
+        let conn = conn_result?;
         (conn, Some(phrase))
     };
 
@@ -100,7 +139,9 @@ pub async fn run(args: SendArgs) -> Result<()> {
     let pb = if args.no_progress || total_size == 0 {
         None
     } else {
-        Some(output::progress_bar(total_size))
+        let pb = output::progress_bar(total_size);
+        pb.tick();
+        Some(pb)
     };
 
     let start = Instant::now();

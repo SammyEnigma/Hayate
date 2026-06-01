@@ -18,8 +18,6 @@ const DEFAULT_PORT: u16 = 50001;
 const CONCURRENCY: usize = 64;
 
 pub async fn run(args: DiscoverArgs) -> Result<()> {
-    output::print_banner();
-
     let subnets = if let Some(cidr) = args.cidr {
         parse_cidr(&cidr)?
     } else {

@@ -19,24 +19,34 @@ pub fn cli_styles() -> Styles {
     name = "hayate",
     version = env!("CARGO_PKG_VERSION"),
     about = "Swift cross-device file transfer",
-    long_about = None,
+    long_about = "Hayate sends encrypted files and directories directly across a LAN.",
+    after_long_help = "\
+Examples:
+  hayate receive --output ./downloads
+  hayate send ./photo.jpg 192.168.1.20:50001
+  hayate send ./project --code alpha-bravo-charlie
+  hayate receive --code alpha-bravo-charlie
+  hayate discover --timeout 5",
     disable_help_subcommand = false,
     styles = cli_styles(),
 )]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Start a receiver and wait for an incoming file or directory.
+    #[command(alias = "recv", alias = "rx")]
     Receive(ReceiveArgs),
 
     /// Send a file or directory to a receiver.
+    #[command(alias = "tx")]
     Send(SendArgs),
 
     /// Scan the local network for active Hayate receivers.
+    #[command(alias = "scan")]
     Discover(DiscoverArgs),
 }
 

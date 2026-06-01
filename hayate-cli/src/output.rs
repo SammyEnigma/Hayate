@@ -6,7 +6,7 @@
 //!  - Consistent margin and column widths.
 
 use console::style;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -80,12 +80,13 @@ pub fn err(msg: &str) {
 /// Creates a download/upload progress bar.
 pub fn progress_bar(total_bytes: u64) -> ProgressBar {
     let style = ProgressStyle::with_template(
-        "   {spinner:.green} [{elapsed_precise}] ▕{bar:40.cyan/blue}▏ {bytes}/{total_bytes} ({percent}%) {bytes_per_sec} {eta}",
+        "   {spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({percent}%) {bytes_per_sec} ETA {eta}",
     )
     .expect("valid template")
-    .progress_chars("█▉▊▋▌▍▎▏  ");
+    .progress_chars("=>-");
     let pb = ProgressBar::new(total_bytes);
     pb.set_style(style);
+    pb.set_draw_target(ProgressDrawTarget::stdout_with_hz(12));
     pb.enable_steady_tick(std::time::Duration::from_millis(80));
     pb
 }
@@ -97,6 +98,7 @@ pub fn spinner(prefix: &str) -> ProgressBar {
         .expect("valid template");
     let pb = ProgressBar::new_spinner();
     pb.set_style(style);
+    pb.set_draw_target(ProgressDrawTarget::stdout_with_hz(12));
     pb.enable_steady_tick(std::time::Duration::from_millis(80));
     pb
 }

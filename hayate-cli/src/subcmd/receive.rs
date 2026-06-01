@@ -18,8 +18,6 @@ use hayate_engine::{
 use crate::{cli::ReceiveArgs, local_addr, output};
 
 pub async fn run(args: ReceiveArgs) -> Result<()> {
-    output::print_banner();
-
     if let Some(code) = &args.code {
         output::info(&format!(
             "Scanning network for pairing peer with code \"{}\"...",
@@ -37,9 +35,23 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
 
         output::info(&format!("Connecting to sender at {peer_addr}..."));
         let endpoint = network::bind_client().await?;
-        let conn = endpoint
-            .connect(peer_addr, "hayate.local", Some(network::client_config()?))?
-            .await?;
+        let client_config = network::client_config()?;
+        let spinner = if args.no_progress {
+            None
+        } else {
+            let spinner = output::spinner("Connecting");
+            spinner.set_message(peer_addr.to_string());
+            Some(spinner)
+        };
+        let conn_result: Result<_> =
+            match endpoint.connect(peer_addr, "hayate.local", Some(client_config)) {
+                Ok(connecting) => connecting.await.map_err(Into::into),
+                Err(e) => Err(e.into()),
+            };
+        if let Some(spinner) = &spinner {
+            spinner.finish_and_clear();
+        }
+        let conn = conn_result?;
 
         let peer = conn.remote_address();
         output::ok(&format!("Connected to {peer}"));
@@ -69,7 +81,9 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
         let pb = if args.no_progress || meta.total_size == 0 {
             None
         } else {
-            Some(output::progress_bar(meta.total_size))
+            let pb = output::progress_bar(meta.total_size);
+            pb.tick();
+            Some(pb)
         };
 
         let pb_clone = pb.clone();
@@ -156,11 +170,14 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
             prompt_accept(&meta, peer)?
         };
 
-        transfer::send_consent_write(&mut send_stream, accept).await?;
+        if let Err(e) = transfer::send_consent_write(&mut send_stream, accept).await {
+            output::err(&format!("Failed to send transfer consent: {e}"));
+            continue;
+        }
         if !accept {
             output::warn("Transfer rejected.");
             conn.close(0u32.into(), b"rejected");
-            break;
+            continue;
         }
 
         output::ok(&format!("Receiving: {}", meta.filename));
@@ -171,11 +188,13 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
         let pb = if args.no_progress || meta.total_size == 0 {
             None
         } else {
-            Some(output::progress_bar(meta.total_size))
+            let pb = output::progress_bar(meta.total_size);
+            pb.tick();
+            Some(pb)
         };
 
         let pb_clone = pb.clone();
-        let checksum = transfer::receive_payload_split(
+        let receive_result = transfer::receive_payload_split(
             &key,
             &mut recv_stream,
             &dest,
@@ -186,11 +205,20 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
                 }
             },
         )
-        .await?;
+        .await;
 
         if let Some(pb) = &pb {
             pb.finish_and_clear();
         }
+
+        let checksum = match receive_result {
+            Ok(checksum) => checksum,
+            Err(e) => {
+                output::err(&format!("Transfer failed: {e}"));
+                conn.close(1u32.into(), b"failed");
+                continue;
+            }
+        };
 
         let elapsed = start.elapsed().as_secs_f64();
         output::print_transfer_summary(&meta.filename, meta.total_size, elapsed, &checksum, false);
