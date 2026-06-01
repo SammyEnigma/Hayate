@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/ShiinaSaku/Hayate/actions/workflows/ci.yml/badge.svg)](https://github.com/ShiinaSaku/Hayate/actions/workflows/ci.yml)
 [![Builds](https://github.com/ShiinaSaku/Hayate/actions/workflows/builds.yml/badge.svg)](https://github.com/ShiinaSaku/Hayate/actions/workflows/builds.yml)
-[![Rust](https://img.shields.io/badge/rust-1.96%2B-orange?logo=rust)](Cargo.toml)
+[![Rust](https://img.shields.io/badge/rust-1.95%2B-orange?logo=rust)](Cargo.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/ShiinaSaku/Hayate?include_prereleases&sort=semver)](https://github.com/ShiinaSaku/Hayate/releases)
 
@@ -20,7 +20,7 @@
    Swift File Transfer | Secure, Encrypted, & Compressed
 ```
 
-Hayate is a zero-config, highly-optimized CLI tool written in Rust to send files and directories between machines on a local network. Built on **QUIC** (via `compio-quic` and `quinn-proto`) and completion-based asynchronous I/O (`io_uring` on Linux/Android, `IOCP` on Windows, `kqueue` on macOS), Hayate bypasses typical bottlenecks to maximize your Wi-Fi 6/6E or Ethernet pipelines.
+Hayate is a zero-config, high-performance CLI for sending files and directories between machines on a local network. Built on **QUIC** via `compio-quic` and `quinn-proto`, with completion-based asynchronous I/O (`io_uring` on Linux/Android, `IOCP` on Windows, `kqueue` on macOS), Hayate is designed to keep fast Wi-Fi and Ethernet links saturated without sacrificing safety.
 
 ---
 
@@ -28,7 +28,7 @@ Hayate is a zero-config, highly-optimized CLI tool written in Rust to send files
 
 * **Authenticated Encryption**: Ephemeral `X25519` key exchange (DH) and `ChaCha20-Poly1305` AEAD payload encryption.
 * **Proactor Async Engine**: Driven by `compio` thread-per-core runtime for zero-cost async I/O.
-* **Modern Progress Bar**: Enabled by default, featuring high-fidelity, sub-block unicode bars (`█▉▊▋▌▍▎▏  `), transfer rates, and ETA spinner.
+* **Terminal-Safe Progress**: Enabled by default, with transfer rate, ETA, elapsed time, and connection/pairing spinners that behave consistently across desktop terminals and Termux.
 * **Zero-Config Pairing**: Secure LAN pairing utilizing random code-phrase broadcasters—no manual IP swapping required.
 * **Hardware Hashing**: Hashing utilizing `ring::digest` hardware-accelerated SHA-256 for integrity verification.
 * **Smart Compression**: Concurrent `zstd` level 1 compression that automatically skips pre-compressed file extensions (e.g., `.zip`, `.mp4`, `.png`).
@@ -37,25 +37,35 @@ Hayate is a zero-config, highly-optimized CLI tool written in Rust to send files
 
 ---
 
-## ✦ Modern Progress Bar (Enabled by Default)
+## ✦ CLI Experience
 
-Hayate comes out-of-the-box with a high-fidelity visual progress indicator:
+Hayate keeps normal commands focused on the active transfer. The banner is shown only for help-oriented entry points:
 
-```text
- ⠋ [00:00:04] ▕█████████████████████████████████▍       ▏ 1.15 GiB/1.46 GiB (78%) 14.2 MiB/s 22s
+```bash
+hayate
+hayate --help
+hayate help
+hayate receive --help
 ```
 
-* **Smooth Blocks**: Sub-character resolution fills standard terminals elegantly.
-* **Steady Tick**: The progress spinner animates smoothly at 80ms ticks regardless of disk read speeds.
-* **Headless Friendly**: Running in scripts, SSH sessions, or Termux environments? Suppress visual bars easily by passing `--no-progress` or the `--no-tui` alias.
+During transfers, Hayate shows connection and pairing spinners followed by a terminal-safe progress bar:
+
+```text
+   ⠋ [00:00:04] [==============================>---------] 1.15 GiB/1.46 GiB (78%) 14.2 MiB/s ETA 22s
+```
+
+* **Consistent Output**: `send`, `receive`, and `discover` start directly with useful status lines instead of repeating the banner.
+* **Steady Tick**: Spinners animate at a steady cadence while connecting, pairing, or transferring.
+* **Headless Friendly**: Suppress visual indicators with `--no-progress` or the `--no-tui` alias.
+* **Receiver Lifecycle**: `hayate receive` exits after one successful transfer, but keeps listening after failed connections, failed handshakes, rejected transfers, or dropped transfers.
 
 ---
 
 ## ✦ Quick Start
 
-### 1. Pairing Mode (Secure & Automatic)
+### 1. Pairing Mode
 
-When you do not want to lookup IP addresses, use code-phrase pairing.
+Use code-phrase pairing when you do not want to exchange IP addresses manually.
 
 **On the Receiver:**
 ```bash
@@ -66,11 +76,11 @@ hayate receive --code "apple-bravo-charlie" --output ~/Downloads
 ```bash
 hayate send ./holiday_photos.zip --code "apple-bravo-charlie"
 ```
-*Hayate will automatically scan the local subnet, pair the nodes, perform key exchanges, and transfer the file.*
+Hayate scans the local network, pairs the nodes with the shared code phrase, performs the key exchange, and transfers the payload.
 
-### 2. Direct Mode (Immediate IP Target)
+### 2. Direct Mode
 
-Specify the IP directly to skip pairing broadcasts.
+Specify the receiver address directly to skip pairing broadcasts.
 
 **On the Receiver:**
 ```bash
@@ -82,44 +92,65 @@ hayate receive --port 50001
 hayate send ./large_archive.tar --peer 192.168.1.50:50001
 ```
 
+You can also pass the target positionally:
+
+```bash
+hayate send ./large_archive.tar 192.168.1.50:50001
+```
+
+Use either positional `TARGET` or `--peer`, not both.
+
 ---
 
 ## ✦ CLI Command Reference
 
+Run `hayate` or `hayate --help` for the top-level help menu. Normal commands do not print the banner; help commands do.
+
 ### `hayate receive`
-Starts a local receiver endpoint.
+Starts a receiver and waits for one incoming file or directory. After a successful receive it exits. If a connection attempt fails, the receiver reports the error and keeps listening.
+
+Aliases: `recv`, `rx`
+
 ```text
 Usage: hayate receive [OPTIONS]
 
 Options:
-  -b, --bind <BIND>      IP address to bind the QUIC listener [default: 0.0.0.0]
-  -p, --port <PORT>      Port to listen on [default: 50001]
+  -b, --bind <BIND>      IP address to bind the QUIC listener [env: HAYATE_BIND=] [default: 0.0.0.0]
+  -p, --port <PORT>      Port to listen on [env: HAYATE_PORT=] [default: 50001]
   -o, --output <OUTPUT>  Directory to save received files into [default: .]
       --auto-accept      Auto-accept all incoming transfers without prompting
-      --no-progress      Suppress the progress bar (alias: --no-tui)
-      --code <CODE>      Cryptographic code-phrase for automatic pairing
+      --no-progress      Suppress the progress bar and spinner output
+      --code <CODE>      Cryptographic code-phrase for pairing
   -h, --help             Print help
 ```
 
 ### `hayate send`
 Sends a file or directory to a receiver.
+
+Alias: `tx`
+
 ```text
 Usage: hayate send [OPTIONS] <PATH> [TARGET]
 
 Arguments:
   <PATH>    Path to the file or directory to send
-  [TARGET]  Receiver address in the form `ip:port` or `hostname:port`
+  [TARGET]  Receiver address in the form ip:port or hostname:port
 
 Options:
-      --peer <PEER>  Receiver address in the form `ip:port` (compat option)
+      --peer <PEER>  Receiver address in the form ip:port or hostname:port (compat option)
       --code <CODE>  Cryptographic code-phrase for pairing
   -z, --compress     Compress chunks with zstd level 1 before encrypting
-      --no-progress  Suppress the progress bar (alias: --no-tui)
+      --no-progress  Suppress the progress bar and spinner output
   -h, --help         Print help
 ```
 
+`TARGET` and `--peer` are mutually exclusive. If neither is supplied, Hayate generates a pairing code and waits for a receiver using `hayate receive --code "<code>"`.
+
 ### `hayate discover`
 Scans the local network subnet for active receivers.
+
+Alias: `scan`
+
 ```text
 Usage: hayate discover [OPTIONS]
 
@@ -143,7 +174,7 @@ A common question is: **Why does Hayate encrypt payloads using ChaCha20-Poly1305
 
 ## ✦ Termux (Android) Usage
 
-Android OS limits multicast discovery. Direct IP connections are recommended:
+Android can limit multicast and broadcast discovery depending on device and network policy. Direct IP connections are the most reliable option:
 
 **On Phone (Receiver):**
 ```bash
@@ -154,6 +185,8 @@ Android OS limits multicast discovery. Direct IP connections are recommended:
 ```bash
 hayate send ./documents.pdf --peer 192.168.1.13:50002
 ```
+
+`--no-progress` is recommended for scripted Termux runs or terminals that do not redraw progress output reliably.
 
 ---
 
@@ -166,14 +199,14 @@ Run the following command to download and install the latest binary to `/usr/loc
 ```bash
 curl -sSf https://raw.githubusercontent.com/ShiinaSaku/Hayate/refs/heads/master/scripts/install.sh | bash
 ```
-*(Source code: [install.sh](file:///Users/saksham/Projects/Hayate/scripts/install.sh))*
+Source code: [`scripts/install.sh`](scripts/install.sh)
 
 ### Windows (PowerShell)
 Run the following command in PowerShell to download and install the Windows executable:
 ```powershell
 irm https://raw.githubusercontent.com/ShiinaSaku/Hayate/refs/heads/master/scripts/install.ps1 | iex
 ```
-*(Source code: [install.ps1](file:///Users/saksham/Projects/Hayate/scripts/install.ps1))*
+Source code: [`scripts/install.ps1`](scripts/install.ps1)
 
 ### Manual Installation
 Alternatively, you can manually download and configure precompiled binaries from the [Releases](https://github.com/ShiinaSaku/Hayate/releases) page.
@@ -183,7 +216,7 @@ Alternatively, you can manually download and configure precompiled binaries from
 ## ✦ Building from Source
 
 ### Requirements
-* **Rust compiler**: Stable (1.96+ edition 2024).
+* **Rust compiler**: Stable 1.95+.
 * **just** (optional, command runner).
 
 ### Build steps
@@ -203,7 +236,7 @@ Using `just` recipes:
 ```bash
 just check     # Lints, formatting, and unit testing checks
 just build     # Build release CLI target
-just run -h    # Run built CLI help menu
+just run -- --help  # Run built CLI help menu
 ```
 
 ---
@@ -227,7 +260,7 @@ Hayate stands on the shoulders of giants. Special thanks to the authors and main
 
 ## ✦ Changelog
 
-See [CHANGELOG.md](file:///Users/saksham/Projects/Hayate/CHANGELOG.md) for a list of notable changes in each version.
+See [CHANGELOG.md](CHANGELOG.md) for a list of notable changes in each version.
 
 ---
 
