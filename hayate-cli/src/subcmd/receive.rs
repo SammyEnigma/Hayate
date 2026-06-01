@@ -98,10 +98,24 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
 
     let bind_addr = SocketAddr::new(args.bind, args.port);
     let endpoint = network::bind_server(bind_addr).await?;
-    output::info(&format!(
-        "Listening on {} (QUIC / io_uring)",
-        endpoint.local_addr()?
-    ));
+    let local_port = endpoint.local_addr()?.port();
+    if bind_addr.ip().is_unspecified() {
+        let ips = get_local_ips();
+        if ips.is_empty() {
+            output::info(&format!(
+                "Listening on 127.0.0.1:{local_port} (QUIC / io_uring)"
+            ));
+        } else {
+            for ip in ips {
+                output::info(&format!("Listening on {ip}:{local_port} (QUIC / io_uring)"));
+            }
+        }
+    } else {
+        output::info(&format!(
+            "Listening on {} (QUIC / io_uring)",
+            endpoint.local_addr()?
+        ));
+    }
     output::info("Waiting for incoming connection...");
 
     loop {
@@ -146,7 +160,7 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
         if !accept {
             output::warn("Transfer rejected.");
             conn.close(0u32.into(), b"rejected");
-            continue;
+            break;
         }
 
         output::ok(&format!("Receiving: {}", meta.filename));
@@ -181,6 +195,7 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
         let elapsed = start.elapsed().as_secs_f64();
         output::print_transfer_summary(&meta.filename, meta.total_size, elapsed, &checksum, false);
         conn.close(0u32.into(), b"complete");
+        break;
     }
 
     Ok(())
@@ -265,4 +280,22 @@ fn resolve_output(output_dir: &std::path::Path, meta: &Metadata) -> Result<PathB
         .file_name()
         .unwrap_or_else(|| std::ffi::OsStr::new("received_file"));
     Ok(output_dir.join(name))
+}
+
+fn get_local_ips() -> Vec<String> {
+    let mut ips = Vec::new();
+    if let Ok(ifaces) = get_if_addrs::get_if_addrs() {
+        for iface in ifaces {
+            if iface.is_loopback() {
+                continue;
+            }
+            if let get_if_addrs::IfAddr::V4(ifv4) = iface.addr {
+                let ip_str = ifv4.ip.to_string();
+                if !ifv4.ip.is_unspecified() && !ifv4.ip.is_multicast() {
+                    ips.push(ip_str);
+                }
+            }
+        }
+    }
+    ips
 }
