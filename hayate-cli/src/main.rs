@@ -1,4 +1,5 @@
 mod cli;
+mod local_addr;
 mod output;
 mod subcmd;
 mod words;

@@ -12,7 +12,7 @@ use std::{
 use anyhow::Result;
 use futures_util::stream::{self, StreamExt};
 
-use crate::{cli::DiscoverArgs, output};
+use crate::{cli::DiscoverArgs, local_addr, output};
 
 const DEFAULT_PORT: u16 = 50001;
 const CONCURRENCY: usize = 64;
@@ -23,7 +23,7 @@ pub async fn run(args: DiscoverArgs) -> Result<()> {
     let subnets = if let Some(cidr) = args.cidr {
         parse_cidr(&cidr)?
     } else {
-        local_subnets()
+        local_addr::local_subnets()
     };
 
     if subnets.is_empty() {
@@ -93,44 +93,6 @@ pub async fn run(args: DiscoverArgs) -> Result<()> {
 // Subnet helpers
 // ---------------------------------------------------------------------------
 
-fn is_valid_local_ipv4(ip: Ipv4Addr) -> bool {
-    let octets = ip.octets();
-    // Exclude loopback (127.0.0.0/8)
-    if octets[0] == 127 {
-        return false;
-    }
-    // Exclude unspecified (0.0.0.0)
-    if octets[0] == 0 {
-        return false;
-    }
-    // Exclude multicast, reserved, and broadcast (224.0.0.0/4)
-    if octets[0] >= 224 {
-        return false;
-    }
-    true
-}
-
-fn local_subnets() -> Vec<Ipv4Addr> {
-    let mut bases = Vec::new();
-    if let Ok(ifaces) = get_if_addrs::get_if_addrs() {
-        for iface in ifaces {
-            if iface.is_loopback() {
-                continue;
-            }
-            if let get_if_addrs::IfAddr::V4(ifv4) = iface.addr
-                && is_valid_local_ipv4(ifv4.ip)
-            {
-                let o = ifv4.ip.octets();
-                let base = Ipv4Addr::new(o[0], o[1], o[2], 0);
-                if !bases.contains(&base) {
-                    bases.push(base);
-                }
-            }
-        }
-    }
-    bases
-}
-
 fn parse_cidr(cidr: &str) -> Result<Vec<Ipv4Addr>> {
     let parts: Vec<&str> = cidr.split('/').collect();
     if parts.len() != 2 {
@@ -143,33 +105,6 @@ fn parse_cidr(cidr: &str) -> Result<Vec<Ipv4Addr>> {
     }
     let o = base.octets();
     Ok(vec![Ipv4Addr::new(o[0], o[1], o[2], 0)])
-}
-
-fn get_local_ip() -> String {
-    if let Ok(ifaces) = get_if_addrs::get_if_addrs() {
-        for iface in ifaces {
-            if iface.is_loopback() {
-                continue;
-            }
-            if let get_if_addrs::IfAddr::V4(ifv4) = iface.addr
-                && is_valid_local_ipv4(ifv4.ip)
-            {
-                return ifv4.ip.to_string();
-            }
-        }
-    }
-    "127.0.0.1".to_owned()
-}
-
-fn is_local_ip(ip: IpAddr) -> bool {
-    if let Ok(ifaces) = get_if_addrs::get_if_addrs() {
-        for iface in ifaces {
-            if iface.ip() == ip {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 // ---------------------------------------------------------------------------
@@ -189,14 +124,16 @@ async fn probe_one(addr: SocketAddr, timeout: Duration) -> Option<(String, IpAdd
         conn.close(0u32.into(), b"discover");
 
         let ip = addr.ip();
-        let is_local = ip.is_loopback() || is_local_ip(ip);
+        let is_local = ip.is_loopback() || local_addr::is_local_ip(ip);
         let name = if is_local {
             "Local Instance".to_owned()
         } else {
             "Hayate Peer".to_owned()
         };
         let resolved_ip = if is_local {
-            get_local_ip().parse().unwrap_or(ip)
+            local_addr::primary_local_ipv4()
+                .map(IpAddr::V4)
+                .unwrap_or(ip)
         } else {
             ip
         };

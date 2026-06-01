@@ -15,7 +15,7 @@ use hayate_engine::{
     transfer,
 };
 
-use crate::{cli::ReceiveArgs, output};
+use crate::{cli::ReceiveArgs, local_addr, output};
 
 pub async fn run(args: ReceiveArgs) -> Result<()> {
     output::print_banner();
@@ -100,7 +100,7 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
     let endpoint = network::bind_server(bind_addr).await?;
     let local_port = endpoint.local_addr()?.port();
     if bind_addr.ip().is_unspecified() {
-        let ips = get_local_ips();
+        let ips = local_addr::local_ipv4s();
         if ips.is_empty() {
             output::info(&format!(
                 "Listening on 127.0.0.1:{local_port} (QUIC / io_uring)"
@@ -280,22 +280,4 @@ fn resolve_output(output_dir: &std::path::Path, meta: &Metadata) -> Result<PathB
         .file_name()
         .unwrap_or_else(|| std::ffi::OsStr::new("received_file"));
     Ok(output_dir.join(name))
-}
-
-fn get_local_ips() -> Vec<String> {
-    let mut ips = Vec::new();
-    if let Ok(ifaces) = get_if_addrs::get_if_addrs() {
-        for iface in ifaces {
-            if iface.is_loopback() {
-                continue;
-            }
-            if let get_if_addrs::IfAddr::V4(ifv4) = iface.addr {
-                let ip_str = ifv4.ip.to_string();
-                if !ifv4.ip.is_unspecified() && !ifv4.ip.is_multicast() {
-                    ips.push(ip_str);
-                }
-            }
-        }
-    }
-    ips
 }
