@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -49,6 +49,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -91,16 +93,81 @@ jobs:
       - name: Package Binary
         shell: bash
         run: |
-          mkdir -p dist
-          cp target/${{ matrix.target }}/release/${{ matrix.output }} dist/${{ matrix.rename_to }}
-          cd dist
-          sha256sum "${{ matrix.rename_to }}" > "${{ matrix.rename_to }}.sha256" || certutil -hashfile "${{ matrix.rename_to }}" SHA256 > "${{ matrix.rename_to }}.sha256"
+          cp target/${{ matrix.target }}/release/${{ matrix.output }} target/${{ matrix.target }}/release/${{ matrix.rename_to }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}
-          path: |
-            dist/${{ matrix.rename_to }}
-            dist/${{ matrix.rename_to }}.sha256
+          path: target/${{ matrix.target }}/release/${{ matrix.rename_to }}
           if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: target/artifacts
+
+      - name: Consolidate Release Artifacts
+        shell: bash
+        run: |
+          # Move files from subdirectories to target/artifacts/ root
+          find target/artifacts -type f -exec mv {} target/artifacts/ \;
+          # Remove empty subdirectories
+          find target/artifacts -mindepth 1 -type d -exec rm -rf {} + 2>/dev/null || true
+          echo "Consolidated artifacts:"
+          ls -la target/artifacts/
+
+      - name: Generate Artifact Attestations
+        uses: actions/attest@v4
+        with:
+          subject-path: "target/artifacts/*"
+
+      - name: Generate Changelog
+        uses: orhun/git-cliff-action@v4
+        id: git-cliff
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          OUTPUT: RELEASE_NOTES.md
+          GITHUB_REPO: ${{ github.repository }}
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          body_path: RELEASE_NOTES.md
+          files: |
+            target/artifacts/*
+
+  publish-crates:
+    name: Publish to Crates.io
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify Package Integrity (Dry-Run)
+        run: |
+          cargo publish -p hayate --dry-run
+
+      - name: Publish Core Engine Crate
+        run: |
+          cargo publish -p hayate --token ${{ secrets.CARGO_REGISTRY_TOKEN }}

@@ -36,4 +36,4 @@ clean:
     cargo clean
 
 changelog:
-    ./scripts/generate-changelog.sh
+    git cliff -o CHANGELOG.md
