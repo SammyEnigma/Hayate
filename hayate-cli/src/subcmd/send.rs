@@ -4,7 +4,7 @@ use std::{io, net::ToSocketAddrs, path::Path, time::Instant};
 
 use anyhow::{Context, Result, bail};
 use compio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
-use hayate_engine::{
+use hayate::{
     EngineError, crypto, network,
     protocol::{Metadata, PROTOCOL_VERSION, TRANSFER_DIR, TRANSFER_FILE},
     transfer,
@@ -40,7 +40,7 @@ pub async fn run(args: SendArgs) -> Result<()> {
             .next()
             .context("could not resolve target")?;
 
-        output::info(&format!("Connecting to {target_addr}..."));
+        output::stage("connect", format!("dialing {target_addr}"));
 
         let endpoint = network::bind_client().await?;
         let client_config = network::client_config()?;
@@ -63,15 +63,9 @@ pub async fn run(args: SendArgs) -> Result<()> {
         (conn, args.code.clone())
     } else {
         if print_instruction {
-            output::warn(&format!(
-                "Waiting for receiver. Run:\n   hayate receive --code \"{}\"\n",
-                phrase
-            ));
+            output::pairing_code(&phrase, &format!("hayate receive --code \"{phrase}\""));
         } else {
-            output::info(&format!(
-                "Waiting for receiver pairing with code \"{}\"...",
-                phrase
-            ));
+            output::stage("pairing", format!("waiting with code \"{phrase}\""));
         }
 
         let bind_addr: std::net::SocketAddr = "0.0.0.0:0".parse().unwrap();
@@ -80,8 +74,8 @@ pub async fn run(args: SendArgs) -> Result<()> {
 
         let phrase_clone = phrase.clone();
         compio::runtime::spawn(async move {
-            let channel_id = hayate_engine::discovery::derive_channel_id(&phrase_clone);
-            let _ = hayate_engine::discovery::start_broadcaster(channel_id, local_port).await;
+            let channel_id = hayate::discovery::derive_channel_id(&phrase_clone);
+            let _ = hayate::discovery::start_broadcaster(channel_id, local_port).await;
         })
         .detach();
 
@@ -121,25 +115,26 @@ pub async fn run(args: SendArgs) -> Result<()> {
     let (mut send_stream, mut recv_stream) = conn.open_bi()?;
 
     let (meta, total_size) = build_metadata(path)?;
-    output::info(&format!(
-        "Sending: {} ({} bytes, compress={})",
-        meta.filename,
-        meta.total_size,
-        if args.compress { "zstd" } else { "off" }
-    ));
+    output::stage("prepare", &meta.filename);
+    output::key_value("size", output::format_bytes(total_size));
+    output::key_value(
+        "compress",
+        if args.compress { "zstd level 1" } else { "off" },
+    );
 
-    let key = handshake_sender_split(
+    let (key, cipher_id) = handshake_sender_split(
         &mut send_stream,
         &mut recv_stream,
         &meta,
         passphrase.as_deref(),
     )
     .await?;
+    output::key_value("cipher", output::cipher_name(cipher_id));
 
     let pb = if args.no_progress || total_size == 0 {
         None
     } else {
-        let pb = output::progress_bar(total_size);
+        let pb = output::transfer_progress_bar("send", total_size);
         pb.tick();
         Some(pb)
     };
@@ -147,18 +142,32 @@ pub async fn run(args: SendArgs) -> Result<()> {
     let start = Instant::now();
 
     let checksum = if path.is_dir() {
-        send_directory(path, &key, &mut send_stream, args.compress, |b| {
-            if let Some(pb) = &pb {
-                pb.set_position(b);
-            }
-        })
+        send_directory(
+            path,
+            &key,
+            cipher_id,
+            &mut send_stream,
+            args.compress,
+            |b| {
+                if let Some(pb) = &pb {
+                    pb.set_position(b);
+                }
+            },
+        )
         .await?
     } else {
-        send_file(path, &key, &mut send_stream, args.compress, |b| {
-            if let Some(pb) = &pb {
-                pb.set_position(b);
-            }
-        })
+        send_file(
+            path,
+            &key,
+            cipher_id,
+            &mut send_stream,
+            args.compress,
+            |b| {
+                if let Some(pb) = &pb {
+                    pb.set_position(b);
+                }
+            },
+        )
         .await?
     };
 
@@ -179,6 +188,7 @@ pub async fn run(args: SendArgs) -> Result<()> {
         elapsed,
         &checksum,
         args.compress,
+        output::cipher_name(cipher_id),
     );
 
     Ok(())
@@ -196,7 +206,7 @@ fn build_metadata(path: &Path) -> Result<(Metadata, u64)> {
         .into_owned();
 
     if path.is_dir() {
-        let total = hayate_engine::tar::estimate_dir_size(path);
+        let total = hayate::tar::estimate_dir_size(path);
         Ok((
             Metadata {
                 filename,
@@ -223,11 +233,17 @@ async fn handshake_sender_split(
     recv: &mut compio_quic::RecvStream,
     meta: &Metadata,
     passphrase: Option<&str>,
-) -> Result<[u8; 32]> {
-    // 1. Version
-    let compio::BufResult(result, _) = send
-        .write_all(PROTOCOL_VERSION.to_be_bytes().to_vec())
-        .await;
+) -> Result<([u8; 32], u8)> {
+    // 1. Version + Capability
+    let mut ver_and_cap = Vec::with_capacity(3);
+    ver_and_cap.extend_from_slice(&PROTOCOL_VERSION.to_be_bytes());
+    let sender_cap = if crypto::features::is_aes_hw_accelerated() {
+        crypto::CIPHER_AES256_GCM
+    } else {
+        crypto::CIPHER_CHACHA20
+    };
+    ver_and_cap.push(sender_cap);
+    let compio::BufResult(result, _) = send.write_all(ver_and_cap).await;
     result.map_err(EngineError::Io)?;
 
     // 2. Key exchange
@@ -241,8 +257,18 @@ async fn handshake_sender_split(
     peer_pub.copy_from_slice(&peer_pub_vec);
     let key = crypto::derive_key(secret, &peer_pub, passphrase)?;
 
-    // 3. Encrypted metadata
-    let enc = crypto::encrypt_metadata(&key, &meta.encode())?;
+    // 3. Receive selected cipher
+    let compio::BufResult(result, cipher_bytes) = recv.read_exact(vec![0u8; 1]).await;
+    result.map_err(EngineError::Io)?;
+    let selected_cipher = cipher_bytes[0];
+    if selected_cipher != crypto::CIPHER_CHACHA20 && selected_cipher != crypto::CIPHER_AES256_GCM {
+        return Err(
+            EngineError::Handshake("Unknown cipher suite selected by receiver".into()).into(),
+        );
+    }
+
+    // 4. Encrypted metadata
+    let enc = crypto::encrypt_metadata(&key, selected_cipher, &meta.encode())?;
     let compio::BufResult(result, _) = send
         .write_all((enc.len() as u32).to_be_bytes().to_vec())
         .await;
@@ -250,11 +276,11 @@ async fn handshake_sender_split(
     let compio::BufResult(result, _) = send.write_all(enc).await;
     result.map_err(EngineError::Io)?;
 
-    // 4. Consent
+    // 5. Consent
     let compio::BufResult(result, consent) = recv.read_exact(vec![0u8; 1]).await;
     result.map_err(EngineError::Io)?;
     match consent[0] {
-        0x01 => Ok(key),
+        0x01 => Ok((key, selected_cipher)),
         0x00 => Err(EngineError::TransferRejected.into()),
         b => Err(EngineError::InvalidFrame(format!("bad consent 0x{b:02x}")).into()),
     }
@@ -263,19 +289,30 @@ async fn handshake_sender_split(
 async fn send_file(
     path: &Path,
     key: &[u8; 32],
+    cipher_id: u8,
     stream: &mut compio_quic::SendStream,
     compress: bool,
     progress_cb: impl FnMut(u64),
 ) -> Result<String> {
     let file = compio::fs::File::open(path).await?;
-    let source = hayate_engine::transfer::PayloadSource::File { file, pos: 0 };
+    let source = hayate::transfer::PayloadSource::File { file, pos: 0 };
     let filename = path.file_name().and_then(|s| s.to_str());
-    Ok(transfer::send_payload_write(key, source, stream, compress, filename, progress_cb).await?)
+    Ok(transfer::send_payload_write(
+        key,
+        cipher_id,
+        source,
+        stream,
+        compress,
+        filename,
+        progress_cb,
+    )
+    .await?)
 }
 
 async fn send_directory(
     dir: &Path,
     key: &[u8; 32],
+    cipher_id: u8,
     stream: &mut compio_quic::SendStream,
     compress: bool,
     progress_cb: impl FnMut(u64),
@@ -299,11 +336,14 @@ async fn send_directory(
             }
         }
         let mut writer = ChanWriter { tx: tx.clone() };
-        if let Err(e) = hayate_engine::tar::write_tar_sync(&dir_clone, &mut writer) {
+        if let Err(e) = hayate::tar::write_tar_sync(&dir_clone, &mut writer) {
             let _ = tx.send(Err(e));
         }
     });
 
-    let source = hayate_engine::transfer::PayloadSource::Channel(rx);
-    Ok(transfer::send_payload_write(key, source, stream, compress, None, progress_cb).await?)
+    let source = hayate::transfer::PayloadSource::Channel(rx);
+    Ok(
+        transfer::send_payload_write(key, cipher_id, source, stream, compress, None, progress_cb)
+            .await?,
+    )
 }

@@ -9,7 +9,7 @@ use std::{
 
 use anyhow::{Result, bail};
 use compio::io::{AsyncReadExt, AsyncWriteExt};
-use hayate_engine::{
+use hayate::{
     EngineError, crypto, network,
     protocol::{MAX_METADATA_ENCRYPTED, Metadata, PROTOCOL_VERSION, TRANSFER_DIR},
     transfer,
@@ -19,11 +19,8 @@ use crate::{cli::ReceiveArgs, local_addr, output};
 
 pub async fn run(args: ReceiveArgs) -> Result<()> {
     if let Some(code) = &args.code {
-        output::info(&format!(
-            "Scanning network for pairing peer with code \"{}\"...",
-            code
-        ));
-        let peer_addr = match hayate_engine::discovery::listen_for_broadcast(
+        output::stage("pairing", format!("scanning for code \"{code}\""));
+        let peer_addr = match hayate::discovery::listen_for_broadcast(
             Some(code.clone()),
             Duration::from_secs(30),
         )
@@ -33,7 +30,7 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
             None => bail!("Timed out waiting for sender broadcast."),
         };
 
-        output::info(&format!("Connecting to sender at {peer_addr}..."));
+        output::stage("connect", format!("dialing sender at {peer_addr}"));
         let endpoint = network::bind_client().await?;
         let client_config = network::client_config()?;
         let spinner = if args.no_progress {
@@ -57,9 +54,10 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
         output::ok(&format!("Connected to {peer}"));
 
         let (mut send_stream, mut recv_stream) = conn.accept_bi().await?;
-        let (key, meta) =
+        let ((key, cipher_id), meta) =
             handshake_receiver_split(&mut send_stream, &mut recv_stream, Some(code.as_str()))
                 .await?;
+        output::key_value("cipher", output::cipher_name(cipher_id));
 
         let accept = if args.auto_accept {
             true
@@ -74,38 +72,51 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
             return Ok(());
         }
 
-        output::ok(&format!("Receiving: {}", meta.filename));
+        output::stage("receive", &meta.filename);
         let dest = resolve_output(&args.output, &meta)?;
+        output::key_value("output", dest.display());
+        output::key_value("size", output::format_bytes(meta.total_size));
         let start = Instant::now();
 
         let pb = if args.no_progress || meta.total_size == 0 {
             None
         } else {
-            let pb = output::progress_bar(meta.total_size);
+            let pb = output::transfer_progress_bar("receive", meta.total_size);
             pb.tick();
             Some(pb)
         };
 
         let pb_clone = pb.clone();
-        let checksum = transfer::receive_payload_split(
+        let checksum_result = transfer::receive_payload_split(
             &key,
+            cipher_id,
             &mut recv_stream,
             &dest,
             meta.transfer_type,
+            meta.total_size,
             move |bytes| {
                 if let Some(pb) = &pb_clone {
                     pb.set_position(bytes);
                 }
             },
         )
-        .await?;
+        .await;
 
         if let Some(pb) = &pb {
             pb.finish_and_clear();
         }
 
+        let checksum = checksum_result?;
+
         let elapsed = start.elapsed().as_secs_f64();
-        output::print_transfer_summary(&meta.filename, meta.total_size, elapsed, &checksum, false);
+        output::print_transfer_summary(
+            &meta.filename,
+            meta.total_size,
+            elapsed,
+            &checksum,
+            false,
+            output::cipher_name(cipher_id),
+        );
         conn.close(0u32.into(), b"complete");
         return Ok(());
     }
@@ -155,7 +166,7 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
             }
         };
 
-        let (key, meta) =
+        let ((key, cipher_id), meta) =
             match handshake_receiver_split(&mut send_stream, &mut recv_stream, None).await {
                 Ok(r) => r,
                 Err(e) => {
@@ -196,9 +207,11 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
         let pb_clone = pb.clone();
         let receive_result = transfer::receive_payload_split(
             &key,
+            cipher_id,
             &mut recv_stream,
             &dest,
             meta.transfer_type,
+            meta.total_size,
             move |bytes| {
                 if let Some(pb) = &pb_clone {
                     pb.set_position(bytes);
@@ -221,7 +234,14 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
         };
 
         let elapsed = start.elapsed().as_secs_f64();
-        output::print_transfer_summary(&meta.filename, meta.total_size, elapsed, &checksum, false);
+        output::print_transfer_summary(
+            &meta.filename,
+            meta.total_size,
+            elapsed,
+            &checksum,
+            false,
+            output::cipher_name(cipher_id),
+        );
         conn.close(0u32.into(), b"complete");
         break;
     }
@@ -237,9 +257,9 @@ async fn handshake_receiver_split(
     send: &mut compio_quic::SendStream,
     recv: &mut compio_quic::RecvStream,
     passphrase: Option<&str>,
-) -> Result<([u8; 32], Metadata), EngineError> {
-    // 1. Version
-    let compio::BufResult(result, vbuf) = recv.read_exact(vec![0u8; 2]).await;
+) -> Result<(([u8; 32], u8), Metadata), EngineError> {
+    // 1. Version + Sender Capability
+    let compio::BufResult(result, vbuf) = recv.read_exact(vec![0u8; 3]).await;
     result.map_err(EngineError::Io)?;
     let remote_ver = u16::from_be_bytes([vbuf[0], vbuf[1]]);
     if remote_ver != PROTOCOL_VERSION {
@@ -248,6 +268,19 @@ async fn handshake_receiver_split(
             remote: remote_ver,
         });
     }
+    let sender_cap = vbuf[2];
+    if sender_cap != crypto::CIPHER_CHACHA20 && sender_cap != crypto::CIPHER_AES256_GCM {
+        return Err(EngineError::Handshake(
+            "Unknown cipher capability sent by sender".into(),
+        ));
+    }
+
+    let selected_cipher =
+        if sender_cap == crypto::CIPHER_AES256_GCM && crypto::features::is_aes_hw_accelerated() {
+            crypto::CIPHER_AES256_GCM
+        } else {
+            crypto::CIPHER_CHACHA20
+        };
 
     // 2. Key exchange
     let compio::BufResult(result, peer_pub_vec) = recv.read_exact(vec![0u8; 32]).await;
@@ -260,7 +293,11 @@ async fn handshake_receiver_split(
     result.map_err(EngineError::Io)?;
     let key = crypto::derive_key(secret, &peer_pub, passphrase)?;
 
-    // 3. Metadata
+    // 3. Send selected cipher
+    let compio::BufResult(result, _) = send.write_all(vec![selected_cipher]).await;
+    result.map_err(EngineError::Io)?;
+
+    // 4. Metadata
     let compio::BufResult(result, lbuf) = recv.read_exact(vec![0u8; 4]).await;
     result.map_err(EngineError::Io)?;
     let enc_len = u32::from_be_bytes([lbuf[0], lbuf[1], lbuf[2], lbuf[3]]) as usize;
@@ -271,7 +308,7 @@ async fn handshake_receiver_split(
     }
     let compio::BufResult(result, enc) = recv.read_exact(vec![0u8; enc_len]).await;
     result.map_err(EngineError::Io)?;
-    let plain = match crypto::decrypt_metadata(&key, &enc) {
+    let plain = match crypto::decrypt_metadata(&key, selected_cipher, &enc) {
         Ok(p) => p,
         Err(e) => {
             if passphrase.is_some() {
@@ -283,7 +320,7 @@ async fn handshake_receiver_split(
     };
     let meta = Metadata::decode(&plain)?;
 
-    Ok((key, meta))
+    Ok(((key, selected_cipher), meta))
 }
 
 fn prompt_accept(meta: &Metadata, peer: SocketAddr) -> Result<bool> {

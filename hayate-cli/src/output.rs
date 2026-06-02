@@ -1,9 +1,4 @@
-//! Terminal output helpers — banner, status lines, progress bars.
-//!
-//! Rules:
-//!  - No emojis.
-//!  - Clean ASCII box characters only.
-//!  - Consistent margin and column widths.
+//! Terminal output helpers: banner, status lines, progress bars, and summaries.
 
 use console::style;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
@@ -19,7 +14,6 @@ pub fn print_banner() {
     let width = term.size_checked().map(|(_, w)| w).unwrap_or(80);
 
     if width >= 65 {
-        // Vibrant cyan styling for the new high-tech cybersecurity logo
         let logo = r#"
   __   __     _____    __  __    _____    _______     _____  
  /\_\ /_/\   /\___/\ /\  /\  /\ /\___/\ /\_______)\ /\_____\ 
@@ -31,7 +25,6 @@ pub fn print_banner() {
 "#;
         println!("{}", style(logo).bold().cyan());
     } else {
-        // Scaled fallback logo for narrow screen sizes (e.g. mobile/Termux portrait)
         let logo = r#"
   _  _  _  _  _  _ ___ ___ 
  | || |/ _ \| || / _ \ | | 
@@ -42,15 +35,14 @@ pub fn print_banner() {
     }
 
     println!(
-        "   {} {} {}",
-        style("Swift File Transfer").bold().green(),
+        "   {} {} {} {} {}",
+        style("Hayate").bold().green(),
+        style("|").dim(),
+        style("encrypted LAN transfer").white(),
         style("|").dim(),
         style(format!("v{VERSION}")).cyan().bold()
     );
-    println!(
-        "   {}\n",
-        style("Secure, Encrypted, & Compressed").dim().yellow()
-    );
+    println!("   {}\n", style("direct, fast, private").dim());
 }
 
 // ---------------------------------------------------------------------------
@@ -73,20 +65,62 @@ pub fn err(msg: &str) {
     eprintln!("   {}  {}", style("x").bold().red(), msg);
 }
 
+pub fn stage(name: &str, detail: impl std::fmt::Display) {
+    println!(
+        "   {}  {:<11} {}",
+        style(">").bold().cyan(),
+        style(name).bold(),
+        detail
+    );
+}
+
+pub fn key_value(key: &str, value: impl std::fmt::Display) {
+    println!(
+        "      {} {}",
+        style(format!("{key:<10}")).dim(),
+        style(value).white()
+    );
+}
+
+pub fn pairing_code(code: &str, command: &str) {
+    println!();
+    println!("   {}", style("Pairing code").bold().cyan());
+    println!("      {}", style(code).bold().yellow());
+    println!("   {}", style("Receiver command").dim());
+    println!("      {}", style(command).bold().green());
+    println!();
+}
+
+#[must_use]
+pub fn cipher_name(cipher_id: u8) -> &'static str {
+    match cipher_id {
+        hayate::crypto::CIPHER_AES256_GCM => "AES-256-GCM",
+        hayate::crypto::CIPHER_CHACHA20 => "ChaCha20-Poly1305",
+        _ => "unknown",
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Progress bar
 // ---------------------------------------------------------------------------
 
 /// Creates a download/upload progress bar.
 pub fn progress_bar(total_bytes: u64) -> ProgressBar {
+    transfer_progress_bar("transfer", total_bytes)
+}
+
+/// Creates a labelled transfer progress bar.
+pub fn transfer_progress_bar(label: &str, total_bytes: u64) -> ProgressBar {
     let style = ProgressStyle::with_template(
-        "   {spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({percent}%) {bytes_per_sec} ETA {eta}",
+        "   {spinner:.green} {prefix:.bold} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} {bytes_per_sec} eta {eta}",
     )
     .expect("valid template")
-    .progress_chars("=>-");
+    .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+    .progress_chars("█▉▊▋▌▍▎▏  ");
     let pb = ProgressBar::new(total_bytes);
     pb.set_style(style);
-    pb.set_draw_target(ProgressDrawTarget::stdout_with_hz(12));
+    pb.set_prefix(label.to_owned());
+    pb.set_draw_target(ProgressDrawTarget::stderr_with_hz(12));
     pb.enable_steady_tick(std::time::Duration::from_millis(80));
     pb
 }
@@ -94,11 +128,15 @@ pub fn progress_bar(total_bytes: u64) -> ProgressBar {
 /// Creates a spinner for indeterminate progress.
 #[allow(dead_code)]
 pub fn spinner(prefix: &str) -> ProgressBar {
-    let style = ProgressStyle::with_template(&format!("   {{spinner:.cyan}} {prefix}  {{msg}}"))
-        .expect("valid template");
+    let style = ProgressStyle::with_template(&format!(
+        "   {{spinner:.cyan}} {} {{msg}}",
+        style(prefix).bold()
+    ))
+    .expect("valid template")
+    .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏");
     let pb = ProgressBar::new_spinner();
     pb.set_style(style);
-    pb.set_draw_target(ProgressDrawTarget::stdout_with_hz(12));
+    pb.set_draw_target(ProgressDrawTarget::stderr_with_hz(12));
     pb.enable_steady_tick(std::time::Duration::from_millis(80));
     pb
 }
@@ -112,11 +150,17 @@ pub fn print_peer_table(peers: &[(String, std::net::SocketAddr, String)]) {
         warn("No peers found.");
         return;
     }
-    println!("\n  Found {} peer(s):\n", peers.len());
-    println!("  {:<24} {:<24} OS", "NAME", "ADDRESS");
-    println!("  {}", "-".repeat(64));
-    for (name, addr, os) in peers {
-        println!("  {:<24} {:<24} {}", name, addr, os);
+    println!();
+    ok(&format!("Found {} peer(s)", peers.len()));
+    println!(
+        "      {:<4} {:<22} {:<24} OS",
+        style("#").dim(),
+        style("NAME").dim(),
+        style("ADDRESS").dim()
+    );
+    println!("      {}", style("-".repeat(60)).dim());
+    for (idx, (name, addr, os)) in peers.iter().enumerate() {
+        println!("      {:<4} {:<22} {:<24} {}", idx + 1, name, addr, os);
     }
     println!();
 }
@@ -131,21 +175,24 @@ pub fn print_transfer_summary(
     elapsed_secs: f64,
     checksum: &str,
     compressed: bool,
+    cipher: &str,
 ) {
     println!();
     ok(&format!("Transfer complete: {filename}"));
-    info(&format!(
-        "Size: {}  Time: {:.1}s  Speed: {}/s  Compress: {}",
-        format_bytes(bytes),
-        elapsed_secs,
-        format_bytes((bytes as f64 / elapsed_secs) as u64),
-        if compressed { "zstd" } else { "off" },
-    ));
-    info(&format!("SHA-256: {checksum}"));
+    key_value("size", format_bytes(bytes));
+    key_value("time", format!("{elapsed_secs:.2}s"));
+    key_value(
+        "speed",
+        format!("{}/s", format_bytes(speed(bytes, elapsed_secs))),
+    );
+    key_value("cipher", cipher);
+    key_value("compress", if compressed { "zstd" } else { "off" });
+    key_value("sha256", checksum);
     println!();
 }
 
-fn format_bytes(b: u64) -> String {
+#[must_use]
+pub fn format_bytes(b: u64) -> String {
     const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
     let mut v = b as f64;
     let mut unit = UNITS[0];
@@ -163,4 +210,11 @@ fn format_bytes(b: u64) -> String {
     } else {
         format!("{v:.0} {unit}")
     }
+}
+
+fn speed(bytes: u64, elapsed_secs: f64) -> u64 {
+    if elapsed_secs <= f64::EPSILON {
+        return bytes;
+    }
+    (bytes as f64 / elapsed_secs) as u64
 }

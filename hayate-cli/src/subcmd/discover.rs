@@ -112,8 +112,8 @@ fn parse_cidr(cidr: &str) -> Result<Vec<Ipv4Addr>> {
 /// Returns `Some((name, resolved_ip))` if a Hayate receiver is live at `addr`.
 async fn probe_one(addr: SocketAddr, timeout: Duration) -> Option<(String, IpAddr)> {
     compio::time::timeout(timeout, async move {
-        let client_cfg = hayate_engine::network::client_config().ok()?;
-        let endpoint = hayate_engine::network::bind_client().await.ok()?;
+        let client_cfg = hayate::network::client_config().ok()?;
+        let endpoint = hayate::network::bind_client().await.ok()?;
         let conn = endpoint
             .connect(addr, "hayate.local", Some(client_cfg))
             .ok()?
