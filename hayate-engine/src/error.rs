@@ -1,4 +1,4 @@
-//! Error types for hayate-engine.
+//! Error types for the Hayate engine.
 
 use thiserror::Error;
 

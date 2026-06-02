@@ -8,7 +8,8 @@
 //! return type is `BufResult<T, B>` = `(Result<T, io::Error>, B)` where `B`
 //! is the buffer returned after the kernel is done with it.
 
-use std::{io, path::Path};
+use futures_util::stream::{FuturesOrdered, StreamExt};
+use std::{io, path::Path, sync::Arc};
 
 use compio::io::{AsyncReadAt, AsyncReadExt, AsyncWriteAtExt, AsyncWriteExt};
 
@@ -58,21 +59,10 @@ async fn write_all_owned<S: AsyncWriteExt + Unpin>(
     result.map_err(EngineError::Io)
 }
 
-/// Read a `u16` from the stream.
-async fn read_u16<S: AsyncReadExt + Unpin>(stream: &mut S) -> Result<u16, EngineError> {
-    let bytes = read_exact_n(stream, 2).await?;
-    Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
-}
-
 /// Read a `u32` from the stream.
 async fn read_u32<S: AsyncReadExt + Unpin>(stream: &mut S) -> Result<u32, EngineError> {
     let bytes = read_exact_n(stream, 4).await?;
     Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-}
-
-/// Write a `u16` to the stream.
-async fn write_u16<S: AsyncWriteExt + Unpin>(stream: &mut S, v: u16) -> Result<(), EngineError> {
-    write_all_owned(stream, v.to_be_bytes().to_vec()).await
 }
 
 /// Write a `u32` to the stream.
@@ -88,12 +78,20 @@ pub async fn handshake_sender<S>(
     stream: &mut S,
     meta: &Metadata,
     passphrase: Option<&str>,
-) -> Result<[u8; 32], EngineError>
+) -> Result<([u8; 32], u8), EngineError>
 where
     S: compio::io::AsyncRead + compio::io::AsyncWrite + Unpin,
 {
-    // 1. Protocol version
-    write_u16(stream, PROTOCOL_VERSION).await?;
+    // 1. Protocol version + Sender Capability
+    let mut ver_and_cap = Vec::with_capacity(3);
+    ver_and_cap.extend_from_slice(&PROTOCOL_VERSION.to_be_bytes());
+    let sender_cap = if crypto::features::is_aes_hw_accelerated() {
+        crypto::CIPHER_AES256_GCM
+    } else {
+        crypto::CIPHER_CHACHA20
+    };
+    ver_and_cap.push(sender_cap);
+    write_all_owned(stream, ver_and_cap).await?;
 
     // 2. Key exchange
     let (secret, our_pub) = crypto::generate_keypair();
@@ -105,15 +103,24 @@ where
 
     let key = crypto::derive_key(secret, &peer_pub, passphrase)?;
 
-    // 3. Encrypted metadata
-    let encrypted = crypto::encrypt_metadata(&key, &meta.encode())?;
+    // 3. Receive the selected cipher from receiver
+    let cipher_bytes = read_exact_n(stream, 1).await?;
+    let selected_cipher = cipher_bytes[0];
+    if selected_cipher != crypto::CIPHER_CHACHA20 && selected_cipher != crypto::CIPHER_AES256_GCM {
+        return Err(EngineError::Handshake(
+            "Unknown cipher suite selected by receiver".into(),
+        ));
+    }
+
+    // 4. Encrypted metadata
+    let encrypted = crypto::encrypt_metadata(&key, selected_cipher, &meta.encode())?;
     write_u32(stream, encrypted.len() as u32).await?;
     write_all_owned(stream, encrypted).await?;
 
-    // 4. Consent
+    // 5. Consent
     let consent = read_exact_n(stream, 1).await?;
     match consent[0] {
-        0x01 => Ok(key),
+        0x01 => Ok((key, selected_cipher)),
         0x00 => Err(EngineError::TransferRejected),
         other => Err(EngineError::InvalidFrame(format!(
             "unexpected consent byte 0x{other:02x}"
@@ -128,18 +135,32 @@ where
 pub async fn handshake_receiver<S>(
     stream: &mut S,
     passphrase: Option<&str>,
-) -> Result<([u8; 32], Metadata), EngineError>
+) -> Result<(([u8; 32], u8), Metadata), EngineError>
 where
     S: compio::io::AsyncRead + compio::io::AsyncWrite + Unpin,
 {
-    // 1. Version check
-    let remote = read_u16(stream).await?;
-    if remote != PROTOCOL_VERSION {
+    // 1. Version check + Sender Capability
+    let ver_cap = read_exact_n(stream, 3).await?;
+    let remote_ver = u16::from_be_bytes([ver_cap[0], ver_cap[1]]);
+    if remote_ver != PROTOCOL_VERSION {
         return Err(EngineError::ProtocolMismatch {
             local: PROTOCOL_VERSION,
-            remote,
+            remote: remote_ver,
         });
     }
+    let sender_cap = ver_cap[2];
+    if sender_cap != crypto::CIPHER_CHACHA20 && sender_cap != crypto::CIPHER_AES256_GCM {
+        return Err(EngineError::Handshake(
+            "Unknown cipher capability sent by sender".into(),
+        ));
+    }
+
+    let selected_cipher =
+        if sender_cap == crypto::CIPHER_AES256_GCM && crypto::features::is_aes_hw_accelerated() {
+            crypto::CIPHER_AES256_GCM
+        } else {
+            crypto::CIPHER_CHACHA20
+        };
 
     // 2. Key exchange
     let peer_pub_bytes = read_exact_n(stream, 32).await?;
@@ -151,7 +172,10 @@ where
 
     let key = crypto::derive_key(secret, &peer_pub, passphrase)?;
 
-    // 3. Metadata
+    // 3. Write selected cipher back to sender
+    write_all_owned(stream, vec![selected_cipher]).await?;
+
+    // 4. Metadata
     let enc_len = read_u32(stream).await? as usize;
     if enc_len == 0 || enc_len > MAX_METADATA_ENCRYPTED {
         return Err(EngineError::InvalidFrame(format!(
@@ -159,7 +183,7 @@ where
         )));
     }
     let enc = read_exact_n(stream, enc_len).await?;
-    let plain = match crypto::decrypt_metadata(&key, &enc) {
+    let plain = match crypto::decrypt_metadata(&key, selected_cipher, &enc) {
         Ok(p) => p,
         Err(e) => {
             if passphrase.is_some() {
@@ -169,7 +193,7 @@ where
         }
     };
     let meta = Metadata::decode(&plain)?;
-    Ok((key, meta))
+    Ok(((key, selected_cipher), meta))
 }
 
 /// Writes the consent byte (0x01 = accept, 0x00 = reject).
@@ -184,9 +208,11 @@ where
 // Send payload
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::arc_with_non_send_sync)]
 pub async fn send_payload<S>(
     key: &[u8; 32],
-    mut source: PayloadSource,
+    cipher_id: u8,
+    source: PayloadSource,
     stream: &mut S,
     compress: bool,
     filename: Option<&str>,
@@ -197,7 +223,8 @@ where
 {
     use ring::digest;
 
-    // Check if we should skip compression based on file extension
+    // Compression is counterproductive for formats that are already entropy
+    // coded; avoid burning CPU and expanding payloads for those extensions.
     let mut do_compress = compress;
     let ext_opt = if compress {
         filename
@@ -218,65 +245,113 @@ where
         }
     }
 
+    let pool = crate::pool::BufferPool::new(32, CHUNK_SIZE);
+
     let (chunk_tx, chunk_rx) = flume::bounded::<Result<(usize, Vec<u8>), io::Error>>(16);
     let (hash_tx, hash_rx) = flume::bounded::<String>(1);
 
-    // 1. Spawning Reader Task
+    // Reader task: keep a small read-ahead queue so disk latency overlaps with
+    // compression/encryption without allowing unbounded memory growth.
+    let pool_clone = pool.clone();
     compio::runtime::spawn(async move {
         let mut index = 0;
         let mut ctx = digest::Context::new(&digest::SHA256);
-        loop {
-            let chunk_res = match &mut source {
-                PayloadSource::File { file, pos } => {
-                    let buf = vec![0u8; CHUNK_SIZE];
-                    let compio::BufResult(result, mut buf) = file.read_at(buf, *pos).await;
+
+        match source {
+            PayloadSource::File { file, pos } => {
+                let file = Arc::new(file);
+                let read_future = |f: Arc<compio::fs::File>, buf: Vec<u8>, p: u64| async move {
+                    let compio::BufResult(result, buf) = f.read_at(buf, p).await;
+                    (result, buf, p)
+                };
+                let mut reads = FuturesOrdered::new();
+                let queue_depth = 4;
+                let mut current_pos = pos;
+                let mut file_ended = false;
+
+                for _ in 0..queue_depth {
+                    if file_ended {
+                        break;
+                    }
+                    let buf = pool_clone.lease().await;
+                    let f = file.clone();
+                    let p = current_pos;
+                    current_pos += CHUNK_SIZE as u64;
+
+                    reads.push_back(read_future(f, buf, p));
+                }
+
+                while let Some((result, mut buf, _)) = reads.next().await {
                     match result {
                         Ok(n) => {
                             if n == 0 {
-                                None
-                            } else {
-                                *pos += n as u64;
-                                buf.truncate(n);
-                                Some(Ok(buf))
+                                pool_clone.release(buf);
+                                break;
                             }
-                        }
-                        Err(e) => Some(Err(e)),
-                    }
-                }
-                PayloadSource::Channel(rx) => match rx.recv_async().await {
-                    Ok(Ok(data)) => {
-                        if data.is_empty() {
-                            None
-                        } else {
-                            Some(Ok(data))
-                        }
-                    }
-                    Ok(Err(e)) => Some(Err(e)),
-                    Err(_) => None,
-                },
-            };
+                            if n < CHUNK_SIZE {
+                                file_ended = true;
+                            }
+                            buf.truncate(n);
+                            ctx.update(&buf);
 
-            match chunk_res {
-                Some(Ok(chunk)) => {
-                    ctx.update(&chunk);
-                    if chunk_tx.send_async(Ok((index, chunk))).await.is_err() {
-                        break;
+                            if chunk_tx.send_async(Ok((index, buf))).await.is_err() {
+                                break;
+                            }
+                            index += 1;
+                        }
+                        Err(e) => {
+                            pool_clone.release(buf);
+                            let _ = chunk_tx.send_async(Err(e)).await;
+                            break;
+                        }
                     }
-                    index += 1;
+
+                    if !file_ended {
+                        let buf = pool_clone.lease().await;
+                        let f = file.clone();
+                        let p = current_pos;
+                        current_pos += CHUNK_SIZE as u64;
+
+                        reads.push_back(read_future(f, buf, p));
+                    }
                 }
-                Some(Err(e)) => {
-                    let _ = chunk_tx.send_async(Err(e)).await;
-                    break;
+
+                // Reclaim leased buffers for any reads that completed after
+                // the consumer side stopped accepting chunks.
+                while let Some((_, buf, _)) = reads.next().await {
+                    pool_clone.release(buf);
                 }
-                None => break,
+            }
+            PayloadSource::Channel(rx) => {
+                while let Ok(res) = rx.recv_async().await {
+                    match res {
+                        Ok(data) => {
+                            if data.is_empty() {
+                                break;
+                            }
+                            ctx.update(&data);
+                            if chunk_tx.send_async(Ok((index, data))).await.is_err() {
+                                break;
+                            }
+                            index += 1;
+                        }
+                        Err(e) => {
+                            let _ = chunk_tx.send_async(Err(e)).await;
+                            break;
+                        }
+                    }
+                }
             }
         }
+
         let hash = hex::encode(ctx.finish().as_ref());
         let _ = hash_tx.send(hash);
     })
     .detach();
 
-    // 2. Spawning Worker Pool
+    // Worker pool: CPU-bound compression and AEAD sealing are isolated from
+    // the compio executor. Each worker prepares the AEAD key once, then reuses
+    // it for every frame it handles.
     let num_workers = std::thread::available_parallelism()
         .map_or(4, std::num::NonZeroUsize::get)
         .saturating_sub(1)
@@ -288,7 +363,15 @@ where
         let chunk_rx = chunk_rx.clone();
         let result_tx = result_tx.clone();
         let key = *key;
+        let pool = pool.clone();
         std::thread::spawn(move || {
+            let aead_key = match crypto::AeadKey::new(&key, cipher_id) {
+                Ok(key) => key,
+                Err(e) => {
+                    let _ = result_tx.send(Err(e));
+                    return;
+                }
+            };
             while let Ok(res) = chunk_rx.recv() {
                 let (index, chunk) = match res {
                     Ok(val) => val,
@@ -298,6 +381,7 @@ where
                     }
                 };
 
+                let chunk_len = chunk.len();
                 let plain_frame: Vec<u8> = if do_compress {
                     match zstd::encode_all(chunk.as_slice(), 1) {
                         Ok(compressed) if compressed.len() < chunk.len() => {
@@ -320,13 +404,17 @@ where
                     pf
                 };
 
+                if chunk.capacity() >= CHUNK_SIZE {
+                    pool.release(chunk);
+                }
+
                 let mut enc_buf = Vec::with_capacity(4 + 12 + plain_frame.len() + 16);
                 enc_buf.extend_from_slice(&[0u8; 4]); // placeholder for length
-                match crypto::encrypt_frame(&key, &plain_frame, &mut enc_buf) {
+                match crypto::encrypt_frame_with_key(&aead_key, &plain_frame, &mut enc_buf) {
                     Ok(_) => {
                         let len = (enc_buf.len() - 4) as u32;
                         enc_buf[0..4].copy_from_slice(&len.to_be_bytes());
-                        if result_tx.send(Ok((index, enc_buf, chunk.len()))).is_err() {
+                        if result_tx.send(Ok((index, enc_buf, chunk_len))).is_err() {
                             break;
                         }
                     }
@@ -341,7 +429,8 @@ where
     // Drop our handle to result_tx so result_rx completes when all workers exit
     drop(result_tx);
 
-    // 3. Ordered writer loop
+    // Writer loop: worker output may complete out of order, but the stream
+    // remains deterministic by buffering gaps until the next frame arrives.
     let mut pending = std::collections::BTreeMap::new();
     let mut next_index = 0;
     let mut total: u64 = 0;
@@ -373,9 +462,11 @@ where
 
 pub async fn receive_payload<S>(
     key: &[u8; 32],
+    cipher_id: u8,
     stream: &mut S,
     output_path: &Path,
     transfer_type: u8,
+    expected_size: u64,
     mut progress_cb: impl FnMut(u64) + 'static,
 ) -> Result<String, EngineError>
 where
@@ -433,9 +524,17 @@ where
     let (enc_tx, enc_rx) = flume::bounded::<Result<Vec<u8>, io::Error>>(16);
     let (plain_tx, plain_rx) = flume::bounded::<Result<Vec<u8>, EngineError>>(16);
 
-    // 1. Spawning Decryption/Decompression thread
+    // Decrypt/decompress thread: reuse the expanded AEAD key and plaintext
+    // buffer across frames before handing ordered payload bytes to the writer.
     let key = *key;
     std::thread::spawn(move || {
+        let aead_key = match crypto::AeadKey::new(&key, cipher_id) {
+            Ok(key) => key,
+            Err(e) => {
+                let _ = plain_tx.send(Err(e));
+                return;
+            }
+        };
         let mut decrypted_buf = Vec::with_capacity(CHUNK_SIZE + 256);
         while let Ok(res) = enc_rx.recv() {
             let enc = match res {
@@ -445,7 +544,7 @@ where
                     break;
                 }
             };
-            match crypto::decrypt_frame_into(&key, &enc, &mut decrypted_buf) {
+            match crypto::decrypt_frame_into_with_key(&aead_key, &enc, &mut decrypted_buf) {
                 Ok(()) => {
                     if decrypted_buf.is_empty() {
                         let _ = plain_tx.send(Err(EngineError::InvalidFrame(
@@ -483,7 +582,8 @@ where
         }
     });
 
-    // 2. Spawning Disk Writer Task
+    // Writer task: hash and persist plaintext after validation, keeping all
+    // filesystem writes on the completion-based I/O path.
     let write_handle = compio::runtime::spawn(async move {
         use ring::digest;
         let mut ctx = digest::Context::new(&digest::SHA256);
@@ -532,11 +632,41 @@ where
             })??;
         }
 
+        // Size validation
+        if transfer_type == TRANSFER_FILE {
+            if total != expected_size {
+                return Err(EngineError::Io(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    format!(
+                        "Transfer truncated: received {total} bytes, expected {expected_size} bytes"
+                    ),
+                )));
+            }
+        } else {
+            // TRANSFER_DIR
+            if total < expected_size {
+                return Err(EngineError::Io(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    format!(
+                        "Transfer truncated: received {total} bytes, expected at least {expected_size} bytes"
+                    ),
+                )));
+            }
+            if total < 1024 {
+                return Err(EngineError::Io(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "Empty or truncated tar archive received".to_string(),
+                )));
+            }
+        }
+
         let hash = hex::encode(ctx.finish().as_ref());
         Ok::<_, EngineError>(hash)
     });
 
-    // 3. Main network reader loop
+    // Network reader loop: each frame is length-prefixed. A clean EOF means
+    // the peer finished sending; any other read failure is forwarded to the
+    // decrypt thread so the writer task can return a structured error.
     let mut read_error = None;
     loop {
         let len_buf_owned = vec![0u8; 4];
@@ -552,7 +682,9 @@ where
         let frame_len =
             u32::from_be_bytes([len_buf[0], len_buf[1], len_buf[2], len_buf[3]]) as usize;
 
-        if frame_len == 0 || frame_len > (CHUNK_SIZE * 2 + 256) {
+        // Allow frames up to 16 MB to ensure backward compatibility with older transfer
+        // versions that utilized 4 MB chunks.
+        if frame_len == 0 || frame_len > (16 * 1024 * 1024) {
             read_error = Some(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("frame length out of range: {frame_len}"),
@@ -579,7 +711,8 @@ where
         let _ = enc_tx.send_async(Err(e)).await;
     }
 
-    // Drop sender handles so threads/tasks know EOF is reached
+    // Closing the encrypted-frame channel lets worker threads observe EOF and
+    // drains the receive pipeline.
     drop(enc_tx);
 
     let hash = write_handle.await.unwrap()?;
@@ -592,23 +725,44 @@ where
 
 pub async fn send_payload_write(
     key: &[u8; 32],
+    cipher_id: u8,
     source: PayloadSource,
     stream: &mut compio_quic::SendStream,
     compress: bool,
     filename: Option<&str>,
     progress_cb: impl FnMut(u64),
 ) -> Result<String, EngineError> {
-    send_payload(key, source, stream, compress, filename, progress_cb).await
+    send_payload(
+        key,
+        cipher_id,
+        source,
+        stream,
+        compress,
+        filename,
+        progress_cb,
+    )
+    .await
 }
 
 pub async fn receive_payload_split(
     key: &[u8; 32],
+    cipher_id: u8,
     stream: &mut compio_quic::RecvStream,
     output_path: &Path,
     transfer_type: u8,
+    expected_size: u64,
     progress_cb: impl FnMut(u64) + 'static,
 ) -> Result<String, EngineError> {
-    receive_payload(key, stream, output_path, transfer_type, progress_cb).await
+    receive_payload(
+        key,
+        cipher_id,
+        stream,
+        output_path,
+        transfer_type,
+        expected_size,
+        progress_cb,
+    )
+    .await
 }
 
 pub async fn send_consent_write(

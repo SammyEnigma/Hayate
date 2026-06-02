@@ -1047,28 +1047,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
-name = "hayate-cli"
-version = "2.0.0"
-dependencies = [
- "anyhow",
- "clap",
- "compio",
- "compio-quic",
- "compio-runtime",
- "console",
- "flume",
- "futures-util",
- "get_if_addrs",
- "hayate-engine",
- "indicatif",
- "local-ip-address",
- "rand 0.10.1",
- "tar",
- "walkdir",
-]
-
-[[package]]
-name = "hayate-engine"
+name = "hayate"
 version = "2.0.0"
 dependencies = [
  "anyhow",
@@ -1096,12 +1075,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "hayate-cli"
+version = "2.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "compio",
+ "compio-quic",
+ "compio-runtime",
+ "console",
+ "flume",
+ "futures-util",
+ "get_if_addrs",
+ "hayate",
+ "indicatif",
+ "local-ip-address",
+ "rand 0.10.1",
+ "tar",
+ "walkdir",
+]
+
+[[package]]
 name = "hayate-ffi"
 version = "2.0.0"
 dependencies = [
  "anyhow",
  "compio",
- "hayate-engine",
+ "hayate",
 ]
 
 [[package]]

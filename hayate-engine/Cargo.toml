@@ -1,19 +1,26 @@
 [package]
 
-name = 'hayate-engine'
+name = 'hayate'
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
 license.workspace = true
+repository.workspace = true
 rust-version.workspace = true
+description = 'Completion-based QUIC transfer engine for Hayate.'
+documentation = 'https://docs.rs/hayate'
+readme = '../README.md'
+keywords = ['quic', 'transfer', 'compio', 'lan', 'crypto']
+categories = ['network-programming', 'asynchronous']
 
 [lib]
 
-name = 'hayate_engine'
+name = 'hayate'
 crate-type = ['lib']
 
 [dependencies]
 
-compio = { workspace = true }
+compio = { workspace = true, features = ['time'] }
 compio-runtime = { workspace = true }
 compio-quic = { workspace = true }
 futures-util = { workspace = true }

@@ -44,6 +44,42 @@ pub fn generate_self_signed() -> Result<
     Ok((vec![der], key))
 }
 
+/// Helper to construct OS-aware Quinn TransportConfig.
+pub fn build_transport_config() -> Arc<quinn_proto::TransportConfig> {
+    let mut config = quinn_proto::TransportConfig::default();
+
+    // 1. Congestion Control
+    // We use the default Cubic congestion controller. BBR requires precise user-space
+    // pacing timers which incur substantial timer system-call overhead on macOS/Android,
+    // resulting in high CPU usage and lower throughput on high-speed local Wi-Fi/LANs.
+
+    // 2. Asymmetric Flow Control Windows
+    #[cfg(target_os = "android")]
+    {
+        // Android/Termux: Optimized flow control windows to prevent kernel buffer drops
+        // while allowing enough outstanding data to saturate Wi-Fi links.
+        config.stream_receive_window(quinn_proto::VarInt::from_u32(4_194_304)); // 4 MB
+        config.receive_window(quinn_proto::VarInt::from_u32(8_388_608)); // 8 MB
+        config.send_window(8_388_608); // 8 MB
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        // macOS/Linux/Windows: Massive buffers for 10Gbps line rate.
+        config.stream_receive_window(quinn_proto::VarInt::from_u32(25_165_824)); // 24 MB
+        config.receive_window(quinn_proto::VarInt::from_u32(50_331_648)); // 48 MB
+        config.send_window(50_331_648); // 48 MB
+    }
+
+    // 3. Keep-alive and MTU optimizations
+    config.keep_alive_interval(Some(std::time::Duration::from_secs(5)));
+    config.initial_mtu(1450);
+    config.max_idle_timeout(Some(quinn_proto::VarInt::from_u32(60_000).into()));
+    config.enable_segmentation_offload(true);
+
+    Arc::new(config)
+}
+
 /// Builds a `ServerConfig` for the receiver endpoint.
 pub fn server_config() -> Result<ServerConfig, EngineError> {
     SERVER_CFG.get_or_init(|| {
@@ -57,12 +93,7 @@ pub fn server_config() -> Result<ServerConfig, EngineError> {
             .expect("failed to create QUIC server config");
         let mut server_cfg = ServerConfig::with_crypto(Arc::new(quic_server));
 
-        let mut transport = quinn_proto::TransportConfig::default();
-        transport.stream_receive_window(quinn_proto::VarInt::from_u32(32 * 1024 * 1024));
-        transport.receive_window(quinn_proto::VarInt::from_u32(64 * 1024 * 1024));
-        transport.send_window(64 * 1024 * 1024);
-        transport.max_idle_timeout(Some(quinn_proto::VarInt::from_u32(60_000).into()));
-        server_cfg.transport_config(Arc::new(transport));
+        server_cfg.transport_config(build_transport_config());
 
         server_cfg
     });
@@ -81,12 +112,7 @@ pub fn client_config() -> Result<ClientConfig, EngineError> {
             .expect("failed to create QUIC client config");
 
         let mut client_cfg = ClientConfig::new(Arc::new(quic_client));
-        let mut transport = quinn_proto::TransportConfig::default();
-        transport.stream_receive_window(quinn_proto::VarInt::from_u32(32 * 1024 * 1024));
-        transport.receive_window(quinn_proto::VarInt::from_u32(64 * 1024 * 1024));
-        transport.send_window(64 * 1024 * 1024);
-        transport.max_idle_timeout(Some(quinn_proto::VarInt::from_u32(60_000).into()));
-        client_cfg.transport_config(Arc::new(transport));
+        client_cfg.transport_config(build_transport_config());
 
         client_cfg
     });
