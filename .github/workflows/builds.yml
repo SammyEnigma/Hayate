@@ -1,4 +1,4 @@
-name: Builds
+name: Release
 
 on:
   push:
@@ -20,29 +20,29 @@ jobs:
           - name: hayate-darwin-amd64
             target: x86_64-apple-darwin
             runs_on: macos-latest
-            output: hayate
+            output: hayate-cli
             rename_to: hayate-darwin-amd64
           - name: hayate-darwin-arm64
             target: aarch64-apple-darwin
             runs_on: macos-latest
-            output: hayate
+            output: hayate-cli
             rename_to: hayate-darwin-arm64
           - name: hayate-linux-amd64
             target: x86_64-unknown-linux-gnu
-            output: hayate
+            output: hayate-cli
             rename_to: hayate-linux-amd64
           - name: hayate-linux-arm64
             target: aarch64-unknown-linux-gnu
-            output: hayate
+            output: hayate-cli
             rename_to: hayate-linux-arm64
           - name: hayate-windows-amd64
             target: x86_64-pc-windows-msvc
             runs_on: windows-latest
-            output: hayate.exe
+            output: hayate-cli.exe
             rename_to: hayate-windows-amd64.exe
           - name: hayate-termux-arm64
             target: aarch64-linux-android
-            output: hayate
+            output: hayate-cli
             rename_to: hayate-termux-arm64
             is_android: true
 
@@ -76,30 +76,27 @@ jobs:
       - name: Build Binary
         shell: bash
         env:
-          # Target configuration for Linux ARM64
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
           CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
-          # Target configuration for Android ARM64
           CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: aarch64-linux-android24-clang
           CC_aarch64_linux_android: aarch64-linux-android24-clang
           AR_aarch64_linux_android: llvm-ar
         run: |
           if [ "${{ matrix.is_android }}" = "true" ]; then
-            # Add NDK toolchain bin to PATH
             export PATH="${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
           fi
-          cargo build --target ${{ matrix.target }} --release --bin hayate
+          cargo build --target ${{ matrix.target }} --release --bin hayate-cli
 
-      - name: Package Binary
+      - name: Rename Binary
         shell: bash
         run: |
-          cp target/${{ matrix.target }}/release/${{ matrix.output }} target/${{ matrix.target }}/release/${{ matrix.rename_to }}
+          cp target/${{ matrix.target }}/release/${{ matrix.output }} ${{ matrix.rename_to }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}
-          path: target/${{ matrix.target }}/release/${{ matrix.rename_to }}
+          path: ${{ matrix.rename_to }}
           if-no-files-found: error
 
   release:
@@ -120,16 +117,10 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           path: target/artifacts
+          merge-multiple: true  # flattens into one dir, no subdirectories
 
-      - name: Consolidate Release Artifacts
-        shell: bash
-        run: |
-          # Move files from subdirectories to target/artifacts/ root
-          find target/artifacts -type f -exec mv {} target/artifacts/ \;
-          # Remove empty subdirectories
-          find target/artifacts -mindepth 1 -type d -exec rm -rf {} + 2>/dev/null || true
-          echo "Consolidated artifacts:"
-          ls -la target/artifacts/
+      - name: List artifacts
+        run: ls -la target/artifacts/
 
       - name: Generate Artifact Attestations
         uses: actions/attest@v4
@@ -150,24 +141,4 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           body_path: RELEASE_NOTES.md
-          files: |
-            target/artifacts/*
-
-  publish-crates:
-    name: Publish to Crates.io
-    needs: release
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Verify Package Integrity (Dry-Run)
-        run: |
-          cargo publish -p hayate --dry-run
-
-      - name: Publish Core Engine Crate
-        run: |
-          cargo publish -p hayate --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          files: target/artifacts/*
