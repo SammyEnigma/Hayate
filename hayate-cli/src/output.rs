@@ -104,25 +104,32 @@ pub fn cipher_name(cipher_id: u8) -> &'static str {
 // Progress bar
 // ---------------------------------------------------------------------------
 
-/// Creates a download/upload progress bar.
-pub fn progress_bar(total_bytes: u64) -> ProgressBar {
-    transfer_progress_bar("transfer", total_bytes)
-}
-
 /// Creates a labelled transfer progress bar.
 pub fn transfer_progress_bar(label: &str, total_bytes: u64) -> ProgressBar {
     let style = ProgressStyle::with_template(
-        "   {spinner:.green} {prefix:.bold} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} {bytes_per_sec} eta {eta}",
+        "   {prefix:.bold} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({percent:>3}%) {bytes_per_sec} ETA {eta_precise}",
     )
     .expect("valid template")
-    .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
-    .progress_chars("█▉▊▋▌▍▎▏  ");
+    .progress_chars("=> ");
     let pb = ProgressBar::new(total_bytes);
     pb.set_style(style);
     pb.set_prefix(label.to_owned());
-    pb.set_draw_target(ProgressDrawTarget::stderr_with_hz(12));
-    pb.enable_steady_tick(std::time::Duration::from_millis(80));
+    pb.set_draw_target(ProgressDrawTarget::stdout_with_hz(8));
     pb
+}
+
+pub fn set_transfer_position(pb: &ProgressBar, bytes: u64) {
+    if let Some(len) = pb.length()
+        && bytes > len
+    {
+        pb.set_length(bytes);
+    }
+    pb.set_position(bytes);
+}
+
+pub fn finish_transfer_progress(pb: &ProgressBar, total_bytes: u64) {
+    set_transfer_position(pb, total_bytes.max(pb.position()));
+    pb.finish_and_clear();
 }
 
 /// Creates a spinner for indeterminate progress.
@@ -136,7 +143,7 @@ pub fn spinner(prefix: &str) -> ProgressBar {
     .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏");
     let pb = ProgressBar::new_spinner();
     pb.set_style(style);
-    pb.set_draw_target(ProgressDrawTarget::stderr_with_hz(12));
+    pb.set_draw_target(ProgressDrawTarget::stdout_with_hz(12));
     pb.enable_steady_tick(std::time::Duration::from_millis(80));
     pb
 }

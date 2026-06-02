@@ -82,7 +82,6 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
             None
         } else {
             let pb = output::transfer_progress_bar("receive", meta.total_size);
-            pb.tick();
             Some(pb)
         };
 
@@ -96,14 +95,14 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
             meta.total_size,
             move |bytes| {
                 if let Some(pb) = &pb_clone {
-                    pb.set_position(bytes);
+                    output::set_transfer_position(pb, bytes);
                 }
             },
         )
         .await;
 
         if let Some(pb) = &pb {
-            pb.finish_and_clear();
+            output::finish_transfer_progress(pb, meta.total_size);
         }
 
         let checksum = checksum_result?;
@@ -191,16 +190,16 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
             continue;
         }
 
-        output::ok(&format!("Receiving: {}", meta.filename));
-
+        output::stage("receive", &meta.filename);
         let dest = resolve_output(&args.output, &meta)?;
+        output::key_value("output", dest.display());
+        output::key_value("size", output::format_bytes(meta.total_size));
         let start = Instant::now();
 
         let pb = if args.no_progress || meta.total_size == 0 {
             None
         } else {
-            let pb = output::progress_bar(meta.total_size);
-            pb.tick();
+            let pb = output::transfer_progress_bar("receive", meta.total_size);
             Some(pb)
         };
 
@@ -214,14 +213,14 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
             meta.total_size,
             move |bytes| {
                 if let Some(pb) = &pb_clone {
-                    pb.set_position(bytes);
+                    output::set_transfer_position(pb, bytes);
                 }
             },
         )
         .await;
 
         if let Some(pb) = &pb {
-            pb.finish_and_clear();
+            output::finish_transfer_progress(pb, meta.total_size);
         }
 
         let checksum = match receive_result {

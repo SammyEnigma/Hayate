@@ -135,7 +135,6 @@ pub async fn run(args: SendArgs) -> Result<()> {
         None
     } else {
         let pb = output::transfer_progress_bar("send", total_size);
-        pb.tick();
         Some(pb)
     };
 
@@ -150,7 +149,7 @@ pub async fn run(args: SendArgs) -> Result<()> {
             args.compress,
             |b| {
                 if let Some(pb) = &pb {
-                    pb.set_position(b);
+                    output::set_transfer_position(pb, b);
                 }
             },
         )
@@ -164,7 +163,7 @@ pub async fn run(args: SendArgs) -> Result<()> {
             args.compress,
             |b| {
                 if let Some(pb) = &pb {
-                    pb.set_position(b);
+                    output::set_transfer_position(pb, b);
                 }
             },
         )
@@ -178,7 +177,7 @@ pub async fn run(args: SendArgs) -> Result<()> {
     let _ = recv_stream.read(drain_buf).await;
 
     if let Some(pb) = &pb {
-        pb.finish_and_clear();
+        output::finish_transfer_progress(pb, total_size);
     }
 
     let elapsed = start.elapsed().as_secs_f64();

@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [2.0.0] - 2026-06-02
 
 ### Other
 
@@ -84,6 +84,16 @@ Co-authored-by: copilot-swe-agent[bot] <198982749+Copilot@users.noreply.github.c
 - Fix performance ,tui and add ci ([0dfae05d4a824316dbabe0f84c307a9f1de0de40](https://github.com/ShiinaSaku/Hayate/commit/0dfae05d4a824316dbabe0f84c307a9f1de0de40)) by Saku Shiina
 - Update action versions ([2c0c6d0b610702f7b4a7e17009f8e0872b00df7f](https://github.com/ShiinaSaku/Hayate/commit/2c0c6d0b610702f7b4a7e17009f8e0872b00df7f)) by 椎名 朔
 - Feat(cli) : Improve user experience and add alias ([a357a22e433b3583011767eb6fefff573b50d379](https://github.com/ShiinaSaku/Hayate/commit/a357a22e433b3583011767eb6fefff573b50d379)) by Saku Shiina
+- *(engine)* Implement dynamic cipher negotiation, buffer pool, and transport tuning ([0c920d8ac077798f34332806b48ba9b5d423b62a](https://github.com/ShiinaSaku/Hayate/commit/0c920d8ac077798f34332806b48ba9b5d423b62a)) by 椎名 朔
+- *(cli)* Enhance transfer UI, progress indicators, and stage logging ([52b411834d7a6841a861aad453bf229ddad565a6](https://github.com/ShiinaSaku/Hayate/commit/52b411834d7a6841a861aad453bf229ddad565a6)) by 椎名 朔
+
+### ✦ Maintenance & CI/CD
+
+- *(release)* Configure git-cliff, SLSA attestations, and private package settings ([4767a7fc893d0bd396b9bbfe19b66aa1f68c0e84](https://github.com/ShiinaSaku/Hayate/commit/4767a7fc893d0bd396b9bbfe19b66aa1f68c0e84)) by 椎名 朔
+
+### ✦ Refactoring & Code Quality
+
+- *(ffi)* Adapt imports for renamed engine crate and set publish = false ([237c7194cd034204cd1892b8c254963d889ae7ca](https://github.com/ShiinaSaku/Hayate/commit/237c7194cd034204cd1892b8c254963d889ae7ca)) by 椎名 朔
 ## [1.0.0] - 2026-05-29
 
 ### Other
