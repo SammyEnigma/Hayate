@@ -21,7 +21,7 @@ path = 'src/main.rs'
 
 [dependencies]
 
-hayate = { path = "../hayate-engine", version = "2.1.0" }
+hayate = { path = "../hayate-engine", version = "2.1.1" }
 compio = { version = "0.19.0", features = [
   'macros',
   'fs',
