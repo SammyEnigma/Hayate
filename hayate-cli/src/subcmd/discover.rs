@@ -11,8 +11,9 @@ use std::{
 
 use anyhow::Result;
 use futures_util::stream::{self, StreamExt};
+use hayate::local_addr;
 
-use crate::{cli::DiscoverArgs, local_addr, output};
+use crate::{cli::DiscoverArgs, output};
 
 const DEFAULT_PORT: u16 = 50001;
 const CONCURRENCY: usize = 64;

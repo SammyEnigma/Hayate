@@ -1,3 +1,5 @@
+//! A thread-safe pool of fixed-size buffers to avoid heap allocations in the hot path.
+
 use flume::{Receiver, Sender};
 
 /// A thread-safe, lock-free pool of fixed-size byte buffers to eliminate

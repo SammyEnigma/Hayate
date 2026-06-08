@@ -1,3 +1,5 @@
+//! CPU feature detection for hardware-accelerated cryptographic primitives.
+
 /// Dynamically detects if the host CPU possesses hardware AES acceleration.
 #[inline]
 #[must_use]

@@ -1048,7 +1048,7 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "hayate"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1058,8 +1058,10 @@ dependencies = [
  "compio-runtime",
  "flume",
  "futures-util",
+ "get_if_addrs",
  "hex",
  "hkdf",
+ "local-ip-address",
  "quinn-proto",
  "rand 0.10.1",
  "rcgen",
@@ -1076,7 +1078,7 @@ dependencies = [
 
 [[package]]
 name = "hayate-cli"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1086,10 +1088,8 @@ dependencies = [
  "console",
  "flume",
  "futures-util",
- "get_if_addrs",
  "hayate",
  "indicatif",
- "local-ip-address",
  "rand 0.10.1",
  "tar",
  "walkdir",

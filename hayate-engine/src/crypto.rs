@@ -9,12 +9,19 @@ use x25519_dalek::{EphemeralSecret, PublicKey};
 
 use crate::EngineError;
 
+/// CPU feature detection for optimized cryptographic operations.
 pub mod features;
 
+/// Cipher suite identifier for ChaCha20-Poly1305.
 pub const CIPHER_CHACHA20: u8 = 0x00;
+
+/// Cipher suite identifier for AES-256-GCM.
 pub const CIPHER_AES256_GCM: u8 = 0x01;
 
+/// Length of the AEAD nonce in bytes (12 bytes).
 pub const NONCE_LEN: usize = 12;
+
+/// Length of the AEAD authentication tag in bytes (16 bytes).
 pub const TAG_LEN: usize = 16;
 
 /// Prepared AEAD key for repeated frame operations.

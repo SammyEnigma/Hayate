@@ -12,10 +12,10 @@ use compio::io::{AsyncReadExt, AsyncWriteExt};
 use hayate::{
     EngineError, crypto, network,
     protocol::{MAX_METADATA_ENCRYPTED, Metadata, PROTOCOL_VERSION, TRANSFER_DIR},
-    transfer,
+    transfer, local_addr,
 };
 
-use crate::{cli::ReceiveArgs, local_addr, output};
+use crate::{cli::ReceiveArgs, output};
 
 pub async fn run(args: ReceiveArgs) -> Result<()> {
     if let Some(code) = &args.code {

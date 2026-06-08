@@ -25,13 +25,29 @@ use crate::{
 // Non-blocking Payload Sources and Sinks
 // ---------------------------------------------------------------------------
 
+/// Source of data payload to be transferred.
 pub enum PayloadSource {
-    File { file: compio::fs::File, pos: u64 },
+    /// A local file on the filesystem.
+    File {
+        /// The file handle.
+        file: compio::fs::File,
+        /// The starting byte position.
+        pos: u64,
+    },
+    /// An asynchronous channel yielding byte chunks.
     Channel(flume::Receiver<Result<Vec<u8>, io::Error>>),
 }
 
+/// Destination for incoming data payload.
 pub enum PayloadSink {
-    File { file: compio::fs::File, pos: u64 },
+    /// A local file on the filesystem.
+    File {
+        /// The file handle.
+        file: compio::fs::File,
+        /// The starting byte position.
+        pos: u64,
+    },
+    /// An asynchronous channel receiving byte chunks.
     Channel(flume::Sender<Vec<u8>>),
 }
 
@@ -74,6 +90,16 @@ async fn write_u32<S: AsyncWriteExt + Unpin>(stream: &mut S, v: u32) -> Result<(
 // Handshake — sender side
 // ---------------------------------------------------------------------------
 
+/// Performs the cryptographic version check, key exchange, cipher negotiation,
+/// and metadata handshake on the sender side.
+///
+/// This function works with a single combined stream implementing both `AsyncRead`
+/// and `AsyncWrite`.
+///
+/// # Errors
+///
+/// Returns [`EngineError`] if version mismatch, key exchange derivation, cipher negotiation,
+/// or encryption/decryption fails, or if the receiver rejects the transfer.
 pub async fn handshake_sender<S>(
     stream: &mut S,
     meta: &Metadata,
@@ -128,10 +154,86 @@ where
     }
 }
 
+/// Performs the cryptographic version check, key exchange, cipher negotiation,
+/// and metadata handshake on the sender side using separate write and read streams.
+///
+/// This is particularly useful for protocols like QUIC that split connections into
+/// separate unidirectional streams.
+///
+/// # Errors
+///
+/// Returns [`EngineError`] if version mismatch, key exchange derivation, cipher negotiation,
+/// or encryption/decryption fails, or if the receiver rejects the transfer.
+pub async fn handshake_sender_split<W, R>(
+    send: &mut W,
+    recv: &mut R,
+    meta: &Metadata,
+    passphrase: Option<&str>,
+) -> Result<([u8; 32], u8), EngineError>
+where
+    W: compio::io::AsyncWrite + Unpin,
+    R: compio::io::AsyncRead + Unpin,
+{
+    // 1. Protocol version + Sender Capability
+    let mut ver_and_cap = Vec::with_capacity(3);
+    ver_and_cap.extend_from_slice(&PROTOCOL_VERSION.to_be_bytes());
+    let sender_cap = if crypto::features::is_aes_hw_accelerated() {
+        crypto::CIPHER_AES256_GCM
+    } else {
+        crypto::CIPHER_CHACHA20
+    };
+    ver_and_cap.push(sender_cap);
+    write_all_owned(send, ver_and_cap).await?;
+
+    // 2. Key exchange
+    let (secret, our_pub) = crypto::generate_keypair();
+    write_all_owned(send, our_pub.to_vec()).await?;
+
+    let peer_pub_bytes = read_exact_n(recv, 32).await?;
+    let mut peer_pub = [0u8; 32];
+    peer_pub.copy_from_slice(&peer_pub_bytes);
+
+    let key = crypto::derive_key(secret, &peer_pub, passphrase)?;
+
+    // 3. Receive the selected cipher from receiver
+    let cipher_bytes = read_exact_n(recv, 1).await?;
+    let selected_cipher = cipher_bytes[0];
+    if selected_cipher != crypto::CIPHER_CHACHA20 && selected_cipher != crypto::CIPHER_AES256_GCM {
+        return Err(EngineError::Handshake(
+            "Unknown cipher suite selected by receiver".into(),
+        ));
+    }
+
+    // 4. Encrypted metadata
+    let encrypted = crypto::encrypt_metadata(&key, selected_cipher, &meta.encode())?;
+    write_u32(send, encrypted.len() as u32).await?;
+    write_all_owned(send, encrypted).await?;
+
+    // 5. Consent
+    let consent = read_exact_n(recv, 1).await?;
+    match consent[0] {
+        0x01 => Ok((key, selected_cipher)),
+        0x00 => Err(EngineError::TransferRejected),
+        other => Err(EngineError::InvalidFrame(format!(
+            "unexpected consent byte 0x{other:02x}"
+        ))),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Handshake — receiver side
 // ---------------------------------------------------------------------------
 
+/// Performs the cryptographic version check, key exchange, cipher negotiation,
+/// and metadata handshake on the receiver side.
+///
+/// This function works with a single combined stream implementing both `AsyncRead`
+/// and `AsyncWrite`.
+///
+/// # Errors
+///
+/// Returns [`EngineError`] if version mismatch, key exchange derivation, cipher negotiation,
+/// or encryption/decryption fails.
 pub async fn handshake_receiver<S>(
     stream: &mut S,
     passphrase: Option<&str>,
@@ -196,6 +298,82 @@ where
     Ok(((key, selected_cipher), meta))
 }
 
+/// Performs the cryptographic version check, key exchange, cipher negotiation,
+/// and metadata handshake on the receiver side using separate write and read streams.
+///
+/// This is particularly useful for protocols like QUIC that split connections into
+/// separate unidirectional streams.
+///
+/// # Errors
+///
+/// Returns [`EngineError`] if version mismatch, key exchange derivation, cipher negotiation,
+/// or encryption/decryption fails.
+pub async fn handshake_receiver_split<W, R>(
+    send: &mut W,
+    recv: &mut R,
+    passphrase: Option<&str>,
+) -> Result<(([u8; 32], u8), Metadata), EngineError>
+where
+    W: compio::io::AsyncWrite + Unpin,
+    R: compio::io::AsyncRead + Unpin,
+{
+    // 1. Version check + Sender Capability
+    let ver_cap = read_exact_n(recv, 3).await?;
+    let remote_ver = u16::from_be_bytes([ver_cap[0], ver_cap[1]]);
+    if remote_ver != PROTOCOL_VERSION {
+        return Err(EngineError::ProtocolMismatch {
+            local: PROTOCOL_VERSION,
+            remote: remote_ver,
+        });
+    }
+    let sender_cap = ver_cap[2];
+    if sender_cap != crypto::CIPHER_CHACHA20 && sender_cap != crypto::CIPHER_AES256_GCM {
+        return Err(EngineError::Handshake(
+            "Unknown cipher capability sent by sender".into(),
+        ));
+    }
+
+    let selected_cipher =
+        if sender_cap == crypto::CIPHER_AES256_GCM && crypto::features::is_aes_hw_accelerated() {
+            crypto::CIPHER_AES256_GCM
+        } else {
+            crypto::CIPHER_CHACHA20
+        };
+
+    // 2. Key exchange
+    let peer_pub_bytes = read_exact_n(recv, 32).await?;
+    let mut peer_pub = [0u8; 32];
+    peer_pub.copy_from_slice(&peer_pub_bytes);
+
+    let (secret, our_pub) = crypto::generate_keypair();
+    write_all_owned(send, our_pub.to_vec()).await?;
+
+    let key = crypto::derive_key(secret, &peer_pub, passphrase)?;
+
+    // 3. Write selected cipher back to sender
+    write_all_owned(send, vec![selected_cipher]).await?;
+
+    // 4. Metadata
+    let enc_len = read_u32(recv).await? as usize;
+    if enc_len == 0 || enc_len > MAX_METADATA_ENCRYPTED {
+        return Err(EngineError::InvalidFrame(format!(
+            "invalid metadata length: {enc_len}"
+        )));
+    }
+    let enc = read_exact_n(recv, enc_len).await?;
+    let plain = match crypto::decrypt_metadata(&key, selected_cipher, &enc) {
+        Ok(p) => p,
+        Err(e) => {
+            if passphrase.is_some() {
+                return Err(EngineError::InvalidPassphrase);
+            }
+            return Err(e);
+        }
+    };
+    let meta = Metadata::decode(&plain)?;
+    Ok(((key, selected_cipher), meta))
+}
+
 /// Writes the consent byte (0x01 = accept, 0x00 = reject).
 pub async fn send_consent<S>(stream: &mut S, accept: bool) -> Result<(), EngineError>
 where
@@ -208,6 +386,16 @@ where
 // Send payload
 // ---------------------------------------------------------------------------
 
+/// Encrypts and transmits a payload source (file or channel) to the receiver.
+///
+/// Chunks of [`crate::protocol::CHUNK_SIZE`] are read from the source, compressed
+/// (if requested and the file extension suggests it is beneficial), encrypted with the
+/// negotiated AEAD cipher, and written to the stream.
+///
+/// # Errors
+///
+/// Returns [`EngineError`] if reading from source, compressing, encrypting, or writing
+/// to the network fails.
 #[allow(clippy::arc_with_non_send_sync)]
 pub async fn send_payload<S>(
     key: &[u8; 32],
@@ -460,6 +648,15 @@ where
 // Receive payload
 // ---------------------------------------------------------------------------
 
+/// Receives, decrypts, and extracts a payload from a stream, saving it to `output_path`.
+///
+/// Handles decryption, decompression (zstd), size validation, and safe path extraction
+/// for directory transfers.
+///
+/// # Errors
+///
+/// Returns [`EngineError`] if reading from stream, decrypting, decompressing, writing to
+/// target file/directory, or size validation fails.
 pub async fn receive_payload<S>(
     key: &[u8; 32],
     cipher_id: u8,
@@ -723,6 +920,11 @@ where
 // Split-stream wrappers (compio-quic SendStream / RecvStream)
 // ---------------------------------------------------------------------------
 
+/// Sends the payload using a split `compio_quic::SendStream`.
+///
+/// # Errors
+///
+/// Returns [`EngineError`] if sending fails.
 pub async fn send_payload_write(
     key: &[u8; 32],
     cipher_id: u8,
@@ -744,6 +946,11 @@ pub async fn send_payload_write(
     .await
 }
 
+/// Receives the payload using a split `compio_quic::RecvStream`.
+///
+/// # Errors
+///
+/// Returns [`EngineError`] if receiving fails.
 pub async fn receive_payload_split(
     key: &[u8; 32],
     cipher_id: u8,
@@ -765,6 +972,11 @@ pub async fn receive_payload_split(
     .await
 }
 
+/// Writes the consent byte (accept/reject) to a split `compio_quic::SendStream`.
+///
+/// # Errors
+///
+/// Returns [`EngineError`] if writing fails.
 pub async fn send_consent_write(
     stream: &mut compio_quic::SendStream,
     accept: bool,
