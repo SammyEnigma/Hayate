@@ -5,8 +5,8 @@
 //! cargo run --example receive [port]
 //! ```
 
-use std::net::SocketAddr;
 use hayate::runner::HayateReceiver;
+use std::net::SocketAddr;
 
 #[compio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -20,19 +20,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bind_addr = SocketAddr::from(([0, 0, 0, 0], port));
     println!("Listening for incoming Hayate connections on {bind_addr}...");
 
-    let receiver = HayateReceiver::new()
-        .bind(bind_addr)
-        .auto_accept(false); // Ask for consent
+    let receiver = HayateReceiver::new().bind(bind_addr).auto_accept(false); // Ask for consent
 
-    let (checksum, dest) = receiver.receive(".", |meta| {
-        println!("\nIncoming Transfer Request:");
-        println!("  Name: {}", meta.filename);
-        println!("  Size: {} bytes", meta.total_size);
-        println!("Accepting transfer request automatically...");
-        true // Accept
-    }, |bytes| {
-        println!("Progress: {bytes} bytes received");
-    }).await?;
+    let (checksum, dest) = receiver
+        .receive(
+            ".",
+            |meta| {
+                println!("\nIncoming Transfer Request:");
+                println!("  Name: {}", meta.filename);
+                println!("  Size: {} bytes", meta.total_size);
+                println!("Accepting transfer request automatically...");
+                true // Accept
+            },
+            |bytes| {
+                println!("Progress: {bytes} bytes received");
+            },
+        )
+        .await?;
 
     println!("\nTransfer complete!");
     println!("Saved to: {}", dest.display());

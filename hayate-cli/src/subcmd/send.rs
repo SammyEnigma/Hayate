@@ -3,10 +3,10 @@
 use std::{io, net::ToSocketAddrs, path::Path, time::Instant};
 
 use anyhow::{Context, Result, bail};
-use compio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use compio::io::AsyncRead;
 use hayate::{
-    EngineError, crypto, network,
-    protocol::{Metadata, PROTOCOL_VERSION, TRANSFER_DIR, TRANSFER_FILE},
+    network,
+    protocol::{Metadata, TRANSFER_DIR, TRANSFER_FILE},
     transfer,
 };
 
@@ -122,7 +122,7 @@ pub async fn run(args: SendArgs) -> Result<()> {
         if args.compress { "zstd level 1" } else { "off" },
     );
 
-    let (key, cipher_id) = handshake_sender_split(
+    let (key, cipher_id) = transfer::handshake_sender_split(
         &mut send_stream,
         &mut recv_stream,
         &meta,
@@ -224,64 +224,6 @@ fn build_metadata(path: &Path) -> Result<(Metadata, u64)> {
             },
             total,
         ))
-    }
-}
-
-async fn handshake_sender_split(
-    send: &mut compio_quic::SendStream,
-    recv: &mut compio_quic::RecvStream,
-    meta: &Metadata,
-    passphrase: Option<&str>,
-) -> Result<([u8; 32], u8)> {
-    // 1. Version + Capability
-    let mut ver_and_cap = Vec::with_capacity(3);
-    ver_and_cap.extend_from_slice(&PROTOCOL_VERSION.to_be_bytes());
-    let sender_cap = if crypto::features::is_aes_hw_accelerated() {
-        crypto::CIPHER_AES256_GCM
-    } else {
-        crypto::CIPHER_CHACHA20
-    };
-    ver_and_cap.push(sender_cap);
-    let compio::BufResult(result, _) = send.write_all(ver_and_cap).await;
-    result.map_err(EngineError::Io)?;
-
-    // 2. Key exchange
-    let (secret, our_pub) = crypto::generate_keypair();
-    let compio::BufResult(result, _) = send.write_all(our_pub.to_vec()).await;
-    result.map_err(EngineError::Io)?;
-
-    let compio::BufResult(result, peer_pub_vec) = recv.read_exact(vec![0u8; 32]).await;
-    result.map_err(EngineError::Io)?;
-    let mut peer_pub = [0u8; 32];
-    peer_pub.copy_from_slice(&peer_pub_vec);
-    let key = crypto::derive_key(secret, &peer_pub, passphrase)?;
-
-    // 3. Receive selected cipher
-    let compio::BufResult(result, cipher_bytes) = recv.read_exact(vec![0u8; 1]).await;
-    result.map_err(EngineError::Io)?;
-    let selected_cipher = cipher_bytes[0];
-    if selected_cipher != crypto::CIPHER_CHACHA20 && selected_cipher != crypto::CIPHER_AES256_GCM {
-        return Err(
-            EngineError::Handshake("Unknown cipher suite selected by receiver".into()).into(),
-        );
-    }
-
-    // 4. Encrypted metadata
-    let enc = crypto::encrypt_metadata(&key, selected_cipher, &meta.encode())?;
-    let compio::BufResult(result, _) = send
-        .write_all((enc.len() as u32).to_be_bytes().to_vec())
-        .await;
-    result.map_err(EngineError::Io)?;
-    let compio::BufResult(result, _) = send.write_all(enc).await;
-    result.map_err(EngineError::Io)?;
-
-    // 5. Consent
-    let compio::BufResult(result, consent) = recv.read_exact(vec![0u8; 1]).await;
-    result.map_err(EngineError::Io)?;
-    match consent[0] {
-        0x01 => Ok((key, selected_cipher)),
-        0x00 => Err(EngineError::TransferRejected.into()),
-        b => Err(EngineError::InvalidFrame(format!("bad consent 0x{b:02x}")).into()),
     }
 }
 

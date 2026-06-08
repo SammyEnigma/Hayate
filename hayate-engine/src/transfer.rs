@@ -108,6 +108,8 @@ pub async fn handshake_sender<S>(
 where
     S: compio::io::AsyncRead + compio::io::AsyncWrite + Unpin,
 {
+    meta.validate()?;
+
     // 1. Protocol version + Sender Capability
     let mut ver_and_cap = Vec::with_capacity(3);
     ver_and_cap.extend_from_slice(&PROTOCOL_VERSION.to_be_bytes());
@@ -174,6 +176,8 @@ where
     W: compio::io::AsyncWrite + Unpin,
     R: compio::io::AsyncRead + Unpin,
 {
+    meta.validate()?;
+
     // 1. Protocol version + Sender Capability
     let mut ver_and_cap = Vec::with_capacity(3);
     ver_and_cap.extend_from_slice(&PROTOCOL_VERSION.to_be_bytes());
@@ -669,6 +673,12 @@ pub async fn receive_payload<S>(
 where
     S: compio::io::AsyncRead + Unpin,
 {
+    if transfer_type != TRANSFER_FILE && transfer_type != TRANSFER_DIR {
+        return Err(EngineError::InvalidFrame(format!(
+            "invalid transfer type: 0x{transfer_type:02x}"
+        )));
+    }
+
     let (tx, rx) = flume::bounded::<Vec<u8>>(8);
 
     let extract_handle = if transfer_type == TRANSFER_DIR {
@@ -912,7 +922,11 @@ where
     // drains the receive pipeline.
     drop(enc_tx);
 
-    let hash = write_handle.await.unwrap()?;
+    let hash = write_handle.await.map_err(|e| {
+        EngineError::Io(io::Error::other(format!(
+            "receive writer task failed: {e:?}"
+        )))
+    })??;
     Ok(hash)
 }
 

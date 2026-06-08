@@ -11,8 +11,9 @@ use std::time::Duration;
 use compio::io::AsyncRead;
 
 use crate::{
-    EngineError, network, transfer,
+    EngineError, network,
     protocol::{Metadata, TRANSFER_DIR, TRANSFER_FILE},
+    transfer,
 };
 
 /// High-level builder for sending a file or directory over the network.
@@ -113,12 +114,13 @@ impl HayateSender {
             let connecting = endpoint
                 .connect(target_addr, "hayate.local", Some(client_cfg))
                 .map_err(|e| EngineError::Quic(e.to_string()))?;
-            connecting.await.map_err(|e| EngineError::Quic(e.to_string()))?
+            connecting
+                .await
+                .map_err(|e| EngineError::Quic(e.to_string()))?
         } else {
-            let phrase = self
-                .code
-                .as_ref()
-                .ok_or_else(|| EngineError::Handshake("Neither target nor code specified".into()))?;
+            let phrase = self.code.as_ref().ok_or_else(|| {
+                EngineError::Handshake("Neither target nor code specified".into())
+            })?;
 
             let bind_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
             let endpoint = network::bind_server(bind_addr).await?;
@@ -135,7 +137,9 @@ impl HayateSender {
                 .wait_incoming()
                 .await
                 .ok_or_else(|| EngineError::Quic("Endpoint closed during pairing".into()))?;
-            incoming.await.map_err(|e| EngineError::Quic(e.to_string()))?
+            incoming
+                .await
+                .map_err(|e| EngineError::Quic(e.to_string()))?
         };
 
         let (mut send_stream, mut recv_stream) = conn
@@ -216,7 +220,9 @@ impl HayateSender {
         stream: &mut compio_quic::SendStream,
         progress_cb: impl FnMut(u64) + Send + 'static,
     ) -> Result<String, EngineError> {
-        let file = compio::fs::File::open(path).await.map_err(EngineError::Io)?;
+        let file = compio::fs::File::open(path)
+            .await
+            .map_err(EngineError::Io)?;
         let source = transfer::PayloadSource::File { file, pos: 0 };
         let filename = path.file_name().and_then(|s| s.to_str());
         transfer::send_payload_write(
@@ -380,7 +386,8 @@ impl HayateReceiver {
                 Duration::from_secs(30),
             )
             .await
-            .map_err(EngineError::Io)? else {
+            .map_err(EngineError::Io)?
+            else {
                 return Err(EngineError::Handshake(
                     "Timed out waiting for sender broadcast".into(),
                 ));
@@ -391,14 +398,18 @@ impl HayateReceiver {
             let connecting = endpoint
                 .connect(peer_addr, "hayate.local", Some(client_cfg))
                 .map_err(|e| EngineError::Quic(e.to_string()))?;
-            connecting.await.map_err(|e| EngineError::Quic(e.to_string()))?
+            connecting
+                .await
+                .map_err(|e| EngineError::Quic(e.to_string()))?
         } else {
             let endpoint = network::bind_server(self.bind_addr).await?;
             let incoming = endpoint
                 .wait_incoming()
                 .await
                 .ok_or_else(|| EngineError::Quic("Endpoint closed".into()))?;
-            incoming.await.map_err(|e| EngineError::Quic(e.to_string()))?
+            incoming
+                .await
+                .map_err(|e| EngineError::Quic(e.to_string()))?
         };
 
         let (mut send_stream, mut recv_stream) = conn

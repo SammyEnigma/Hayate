@@ -1,55 +1,143 @@
-//! # Hayate (はやて)
+//! # Hayate Engine
 //!
-//! A completion-based I/O engine for direct, encrypted, and compressed LAN transfers.
+//! Hayate is a completion-based transfer engine for encrypted file and directory
+//! movement across local networks. It is the library behind the Hayate CLI, but
+//! it is designed to be embedded directly in Rust applications.
 //!
-//! Driven by the `compio` thread-per-core asynchronous runtime, Hayate uses QUIC
-//! (via `compio-quic` and `quinn-proto`) to saturate local network links while securing
-//! data with ephemeral Diffie-Hellman key exchanges (Curve25519) and symmetric AEAD
-//! encryption (ChaCha20-Poly1305 or AES-256-GCM).
+//! The engine combines:
 //!
-//! This crate can be used standalone to transfer files or directories programmatically
-//! using the high-level builder runners in the [`runner`] module.
+//! * QUIC transport through `compio-quic`.
+//! * Completion-based async I/O through `compio`.
+//! * Ephemeral X25519 key agreement.
+//! * HKDF-SHA256 key derivation.
+//! * ChaCha20-Poly1305 or AES-256-GCM frame encryption.
+//! * Optional zstd compression.
+//! * Safe tar streaming for directory payloads.
 //!
-//! ## Standalone Usage Examples
+//! Most applications should start with [`HayateSender`] and [`HayateReceiver`].
+//! Lower-level modules remain public for custom transports, protocol testing,
+//! or UI integrations that need direct control over handshakes and payload
+//! streams.
 //!
-//! ### Sender Example
+//! ## Direct Transfer
+//!
+//! Direct mode connects to a known receiver address.
+//!
 //! ```no_run
 //! use std::net::SocketAddr;
-//! use hayate::runner::HayateSender;
+//! use hayate::HayateSender;
 //!
 //! # async fn run() -> Result<(), hayate::EngineError> {
 //! let target: SocketAddr = "192.168.1.50:50001".parse().unwrap();
+//!
 //! let sender = HayateSender::new()
 //!     .target(target)
 //!     .compress(true);
 //!
-//! sender.send("my_photo.jpg", |bytes_sent| {
-//!     println!("Progress: {bytes_sent} bytes transferred");
+//! let checksum = sender.send("photos", |bytes_sent| {
+//!     println!("sent {bytes_sent} bytes");
 //! }).await?;
+//!
+//! println!("sha256 {checksum}");
 //! # Ok(())
 //! # }
 //! ```
 //!
-//! ### Receiver Example
 //! ```no_run
 //! use std::net::SocketAddr;
-//! use hayate::runner::HayateReceiver;
+//! use hayate::HayateReceiver;
 //!
 //! # async fn run() -> Result<(), hayate::EngineError> {
 //! let bind_addr: SocketAddr = "0.0.0.0:50001".parse().unwrap();
-//! let receiver = HayateReceiver::new()
-//!     .bind(bind_addr)
-//!     .auto_accept(true);
 //!
-//! let (checksum, path) = receiver.receive("./downloads", |meta| {
-//!     println!("Receiving {}...", meta.filename);
-//!     true
-//! }, |bytes_received| {
-//!     println!("Progress: {bytes_received} bytes received");
-//! }).await?;
+//! let receiver = HayateReceiver::new()
+//!     .bind(bind_addr);
+//!
+//! let (checksum, path) = receiver.receive(
+//!     "./downloads",
+//!     |meta| {
+//!         println!("incoming {} ({} bytes)", meta.filename, meta.total_size);
+//!         true
+//!     },
+//!     |bytes_received| {
+//!         println!("received {bytes_received} bytes");
+//!     },
+//! ).await?;
+//!
+//! println!("saved to {}", path.display());
+//! println!("sha256 {checksum}");
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! ## Pairing-Code Transfer
+//!
+//! Pairing mode lets a sender and receiver find each other through LAN
+//! broadcast using a shared phrase. The same phrase is also used during key
+//! derivation, so peers that do not know it cannot derive the application-layer
+//! metadata and payload key.
+//!
+//! ```no_run
+//! use hayate::HayateSender;
+//!
+//! # async fn run() -> Result<(), hayate::EngineError> {
+//! let sender = HayateSender::new()
+//!     .code("apple-bravo-charlie".to_owned());
+//!
+//! sender.send("report.pdf", |_| {}).await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ```no_run
+//! use hayate::HayateReceiver;
+//!
+//! # async fn run() -> Result<(), hayate::EngineError> {
+//! let receiver = HayateReceiver::new()
+//!     .code("apple-bravo-charlie".to_owned())
+//!     .auto_accept(true);
+//!
+//! let (_checksum, _path) = receiver.receive("./downloads", |_| true, |_| {}).await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ## Module Guide
+//!
+//! * [`runner`] provides the builder-style high-level API.
+//! * [`transfer`] implements handshake, consent, payload send, and payload receive.
+//! * [`protocol`] defines wire constants, frame flags, and [`protocol::Metadata`].
+//! * [`crypto`] contains key agreement, HKDF, AEAD sealing, and AEAD opening.
+//! * [`network`] binds QUIC endpoints and builds ephemeral TLS/transport config.
+//! * [`discovery`] handles pairing-code broadcast and discovery.
+//! * [`tar`] packages directories and safely extracts directory payloads.
+//! * [`local_addr`] exposes local IPv4 helpers for UI and discovery.
+//! * [`error`] defines [`EngineError`].
+//!
+//! ## Protocol Shape
+//!
+//! A transfer establishes QUIC, opens a bidirectional stream, negotiates protocol
+//! version and cipher capability, performs X25519 key agreement, derives a
+//! 32-byte AEAD key, encrypts metadata, sends receiver consent, and then streams
+//! length-prefixed encrypted payload frames. File transfers must finish with the
+//! exact announced byte count; directory transfers are tar streams with
+//! containment checks during extraction.
+//!
+//! ## Safety Guarantees
+//!
+//! Hayate treats peer input as untrusted:
+//!
+//! * Metadata is encrypted and authenticated before use.
+//! * Unknown transfer types are rejected before receive routing.
+//! * Payload frames are length-capped and AEAD-authenticated before writes.
+//! * Directory extraction rejects absolute paths, `..`, symlinks, and hard links.
+//! * Receive task failures are returned as [`EngineError`] instead of panicking.
+//!
+//! ## Runtime
+//!
+//! Public async APIs are intended to run inside a `compio` runtime, commonly via
+//! `#[compio::main]`. Low-level callers must respect `compio` buffer ownership:
+//! buffers are moved into I/O operations and returned through `compio::BufResult`.
 
 #![warn(clippy::all, clippy::pedantic, missing_docs)]
 #![allow(

@@ -2,129 +2,296 @@
 
 [![Crates.io](https://img.shields.io/crates/v/hayate.svg)](https://crates.io/crates/hayate)
 [![Documentation](https://docs.rs/hayate/badge.svg)](https://docs.rs/hayate)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../LICENSE)
 
-An encrypted, compressed, blazing-fast completion-based asynchronous file and directory transfer engine built on **QUIC** and `compio`.
+Hayate Engine is the Rust library behind Hayate's encrypted LAN transfer stack. It gives applications a direct way to send and receive files or directories over QUIC while keeping the protocol, pairing flow, encryption, compression, framing, progress reporting, and archive safety inside one reusable crate.
 
-This crate is the core transport library of the [Hayate CLI](https://github.com/ShiinaSaku/Hayate). It is designed to saturate high-speed local networks (Wi-Fi, Ethernet) while keeping CPU usage minimal through a completion-based (proactor) Thread-Per-Core architecture.
-
----
-
-## ✦ Features
-
-* **Proactor Thread-Per-Core Asynchronous Engine**: Built on `compio` (`io_uring` on Linux/Android, `IOCP` on Windows, and `kqueue` on macOS) for zero-copy completion-based I/O.
-* **Authenticated Encryption**: Ephemeral `X25519` key exchange (DH) and `ChaCha20-Poly1305` or `AES-256-GCM` payload encryption (with hardware acceleration).
-* **Smart Compression**: Concurrent `zstd` level 1 compression that automatically skips pre-compressed file extensions (e.g., `.zip`, `.mp4`, `.png`).
-* **Safe Extraction**: Automatic directory streaming using tar archives with robust path-traversal protection.
-* **Zero-Config Pairing**: Easy peer discovery over local subnets using random code phrase broadcasters.
+The engine is built for local networks where speed matters but peers still cannot be blindly trusted. It uses completion-based async I/O through `compio`, QUIC through `compio-quic`, ephemeral X25519 key agreement, AEAD-encrypted metadata and payload frames, optional zstd compression, and safe tar streaming for directories.
 
 ---
 
-## ✦ Quick Start
+## What You Get
 
-Add `hayate` and `compio` to your `Cargo.toml`:
+* High-level sender and receiver builders for application code.
+* Direct `SocketAddr` transfers when the peer address is already known.
+* Pairing-code discovery when users should not exchange IP addresses manually.
+* Encrypted metadata, filenames, and payload bytes.
+* File and directory transfers through the same progress/checksum API.
+* Bounded frame decoding and strict metadata validation.
+* Directory extraction that rejects traversal, symlinks, and hard links.
+* Lower-level protocol functions for custom transports that still use Hayate framing.
+
+---
+
+## Installation
 
 ```toml
 [dependencies]
-hayate = "2.0"
+hayate = "2.1"
 compio = { version = "0.19", features = ["macros", "runtime"] }
 ```
 
-### 1. Sending a File or Directory
+Hayate's public async examples use `#[compio::main]`, so applications should run inside a `compio` runtime.
 
-```rust
-use std::net::SocketAddr;
-use hayate::runner::HayateSender;
+---
 
-#[compio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let target_addr: SocketAddr = "192.168.1.50:50001".parse()?;
+## Quick Start
 
-    // Initialize the sender
-    let sender = HayateSender::new()
-        .target(target_addr)
-        .compress(true);
+### Receive
 
-    // Send a file or directory
-    let checksum = sender.send("path/to/my_folder", |bytes_sent| {
-        println!("Progress: {bytes_sent} bytes transferred");
-    }).await?;
-
-    println!("Success! SHA-256 Checksum: {checksum}");
-    Ok(())
-}
-```
-
-### 2. Receiving a File or Directory
+Start a receiver, ask your application whether to accept the transfer, and save the payload under `./downloads`.
 
 ```rust
 use std::net::SocketAddr;
 use hayate::runner::HayateReceiver;
 
 #[compio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let bind_addr: SocketAddr = "0.0.0.0:50001".parse()?;
+async fn main() -> Result<(), hayate::EngineError> {
+    let bind_addr: SocketAddr = "0.0.0.0:50001".parse().unwrap();
 
-    // Initialize the receiver
     let receiver = HayateReceiver::new()
         .bind(bind_addr);
 
-    // Wait and receive the transfer
-    let (checksum, saved_path) = receiver.receive("./downloads", |meta| {
-        println!("Accepting transfer: {} ({} bytes)?", meta.filename, meta.total_size);
-        true // Return true to accept, false to reject
-    }, |bytes_received| {
-        println!("Progress: {bytes_received} bytes received");
-    }).await?;
+    let (checksum, saved_path) = receiver.receive(
+        "./downloads",
+        |meta| {
+            println!("Incoming: {} ({} bytes)", meta.filename, meta.total_size);
+            true
+        },
+        |bytes_received| {
+            println!("received {bytes_received} bytes");
+        },
+    ).await?;
 
-    println!("Saved to: {}", saved_path.display());
-    println!("SHA-256 Checksum: {}", checksum);
+    println!("saved to {}", saved_path.display());
+    println!("sha256 {checksum}");
     Ok(())
 }
 ```
 
-### 3. Pairing via Shared Code Phrase
+### Send
 
-You can establish connections without exchanging IP addresses manually:
+Connect directly to the receiver and send a file or directory.
 
-**Sender:**
 ```rust
+use std::net::SocketAddr;
+use hayate::runner::HayateSender;
+
+#[compio::main]
+async fn main() -> Result<(), hayate::EngineError> {
+    let target: SocketAddr = "192.168.1.50:50001".parse().unwrap();
+
+    let sender = HayateSender::new()
+        .target(target)
+        .compress(true);
+
+    let checksum = sender.send("photos", |bytes_sent| {
+        println!("sent {bytes_sent} bytes");
+    }).await?;
+
+    println!("sha256 {checksum}");
+    Ok(())
+}
+```
+
+---
+
+## Pairing Mode
+
+Pairing mode is useful when users know a shared phrase but do not want to exchange IP addresses. The sender broadcasts a channel derived from the phrase; the receiver listens for that channel, connects back, and both sides use the same phrase in key derivation.
+
+### Sender
+
+```rust
+use hayate::runner::HayateSender;
+
+# async fn run() -> Result<(), hayate::EngineError> {
 let sender = HayateSender::new()
-    .code("apple-bravo-charlie".to_string());
-sender.send("file.txt", |b| {}).await?;
+    .code("apple-bravo-charlie".to_owned())
+    .compress(true);
+
+let checksum = sender.send("report.pdf", |_| {}).await?;
+# Ok(())
+# }
 ```
 
-**Receiver:**
+### Receiver
+
 ```rust
+use hayate::runner::HayateReceiver;
+
+# async fn run() -> Result<(), hayate::EngineError> {
 let receiver = HayateReceiver::new()
-    .code("apple-bravo-charlie".to_string());
-receiver.receive(".", |meta| true, |b| {}).await?;
+    .code("apple-bravo-charlie".to_owned())
+    .auto_accept(true);
+
+let (checksum, saved_path) = receiver.receive("./downloads", |_| true, |_| {}).await?;
+# Ok(())
+# }
 ```
 
----
-
-## ✦ System Architecture & Design
-
-### Completion-Based I/O (Proactor)
-Unlike readiness-based models (such as `epoll` or `tokio`), `compio` utilizes a completion-based model. When an I/O operation (like reading a file or socket) is requested, the buffer's ownership is passed directly to the OS kernel. The kernel writes to or reads from it, and returns the buffer back via completion queues. 
-
-Therefore, any custom implementation using `hayate`'s low-level APIs must respect this ownership flow, using `compio::BufResult` return types.
-
-### Thread-Per-Core Concurrency
-To avoid mutex contention and thread synchronization overhead:
-1. Every processor core runs its own single-threaded executor.
-2. Sockets and files bound to an executor thread are touched only by that thread.
-3. Heavy CPU work (such as Zstd compression and AEAD seal/open operations) is offloaded to a dedicated worker pool, leaving the reactor/proactor thread free to poll I/O completion queues.
+Pairing discovery is LAN broadcast based. Some networks, VPNs, mobile hotspots, and Android devices may block broadcast traffic; direct mode is more predictable in those environments.
 
 ---
 
-## ✦ Security & Threat Model
+## API Map
 
-* **MITM Defense**: Ephemeral self-signed X.509 certificates are exchanged over QUIC TLS 1.3. To prevent Man-In-The-Middle attacks in unauthenticated LAN environments, Hayate salts the Diffie-Hellman key derivation with the user's code-phrase/passphrase.
-* **Payload Isolation**: Payloads and filenames are encrypted using an application-level key, ensuring that even if the TLS layer is intercepted, raw file data remains unreadable.
+Use the high-level API unless you are embedding Hayate into a custom transport or UI.
+
+| Module | Purpose |
+| --- | --- |
+| `runner` | Builder-style sender and receiver APIs: `HayateSender`, `HayateReceiver`. |
+| `transfer` | Handshake, consent, payload send/receive, split-stream helpers. |
+| `protocol` | Wire constants, frame flags, `Metadata` encoding and validation. |
+| `crypto` | X25519, HKDF, AEAD frame encryption, cipher selection helpers. |
+| `network` | QUIC endpoint binding, client/server config, ephemeral TLS config. |
+| `discovery` | Pairing-code broadcast and listener utilities. |
+| `tar` | Directory packaging, safe extraction, directory size estimation. |
+| `local_addr` | Local IPv4 and subnet helpers for discovery/UI display. |
+| `error` | `EngineError`, the shared engine error type. |
+
+The crate root re-exports `HayateSender`, `HayateReceiver`, and `EngineError`.
 
 ---
 
-## ✦ License
+## Transfer Lifecycle
+
+Every transfer follows the same protocol shape:
+
+1. The sender and receiver establish a QUIC connection.
+2. The sender opens a bidirectional stream.
+3. Peers exchange the Hayate protocol version and cipher capability.
+4. Peers perform ephemeral X25519 key agreement.
+5. A shared AEAD key is derived with HKDF-SHA256.
+6. The receiver selects ChaCha20-Poly1305 or AES-256-GCM.
+7. The sender encrypts metadata: filename, expected size, and transfer type.
+8. The receiver validates metadata and asks the application for consent.
+9. The sender streams encrypted payload frames.
+10. The receiver authenticates, optionally decompresses, writes, hashes, and validates the payload.
+
+Direct mode may pass `None` for the pairing phrase. Pairing mode should pass the same code phrase on both sides, so a network attacker without the phrase cannot derive the same application-layer key.
+
+---
+
+## Security Model
+
+Hayate uses QUIC TLS 1.3, but its generated certificates are self-signed and ephemeral. That is practical for zero-config LAN transfer, but it is not enough to authenticate peers by itself. Hayate therefore adds application-layer encryption over metadata and payload frames.
+
+Important guarantees:
+
+* X25519 key agreement is ephemeral for each transfer.
+* HKDF-SHA256 derives a 32-byte transfer key.
+* Pairing phrases are used as HKDF salt when supplied.
+* Metadata is encrypted and authenticated before the receiver sees filenames or sizes.
+* Payload frames are AEAD-authenticated before decompression or writes.
+* Invalid metadata transfer types are rejected before file/directory routing.
+* Receivers can reject a transfer after decrypting metadata but before payload bytes are accepted.
+
+Notable boundaries:
+
+* Direct mode without a shared code phrase does not authenticate peer identity beyond the QUIC connection.
+* Pairing phrase strength matters. Human-friendly phrases are convenient, but applications with higher security needs should provide stronger shared secrets.
+* Hayate protects transfer contents; it does not provide user identity, access control, or a persistent trust store.
+
+---
+
+## File and Archive Safety
+
+The receiver treats file paths and archives as untrusted input.
+
+For files:
+
+* The output name is resolved from metadata using only the final path component.
+* The transfer must end with exactly the announced file size.
+* The SHA-256 returned by the API is computed from the plaintext payload bytes.
+
+For directories:
+
+* Directories are streamed as tar archives.
+* Extraction creates the requested destination root before writing entries.
+* Nested parent directories are created as needed.
+* Absolute paths and `..` traversal are rejected.
+* Symlink and hard-link entries are rejected.
+* Truncated directory streams are rejected if fewer bytes arrive than announced.
+
+---
+
+## Compression
+
+Compression is optional and controlled by `HayateSender::compress(true)`.
+
+When enabled, payload chunks are compressed with zstd level 1 only when the compressed frame is smaller than the raw frame. Known already-compressed extensions, such as `zip`, `gz`, `zst`, `mp4`, `mkv`, `jpg`, `png`, `webp`, `flac`, and `opus`, skip compression to avoid wasting CPU or expanding payloads.
+
+---
+
+## Progress and Checksums
+
+Both high-level APIs accept progress callbacks:
+
+```rust
+|bytes| {
+    println!("{bytes} plaintext bytes processed");
+}
+```
+
+The callback reports plaintext payload bytes, not encrypted frame bytes. The returned checksum is a hex-encoded SHA-256 digest of the plaintext payload stream. For directory transfers, that digest is computed over the tar stream bytes that represent the directory payload.
+
+---
+
+## Low-Level Use
+
+Applications that need custom orchestration can use `transfer` directly:
+
+* `handshake_sender_split` / `handshake_receiver_split` for split QUIC streams.
+* `send_consent_write` for receiver consent.
+* `send_payload_write` / `receive_payload_split` for payload transfer.
+* `PayloadSource` and `PayloadSink` for file-backed or channel-backed streams.
+
+These functions assume `compio` ownership semantics: I/O buffers are passed into async operations and returned through `compio::BufResult`. Avoid borrowing buffers across I/O calls.
+
+---
+
+## Error Handling
+
+All public engine APIs return `EngineError`.
+
+Common variants:
+
+| Variant | Meaning |
+| --- | --- |
+| `Io` | Filesystem, socket, channel, or task I/O failure. |
+| `ProtocolMismatch` | Peer speaks a different Hayate wire protocol version. |
+| `TransferRejected` | Receiver declined after reading metadata. |
+| `InvalidPassphrase` | Metadata authentication failed while a phrase was expected. |
+| `Crypto` | Key derivation or AEAD operation failed. |
+| `InvalidFrame` | Malformed metadata, frame length, frame flag, or transfer type. |
+| `PathTraversal` | Archive entry attempted unsafe extraction. |
+| `Quic` | QUIC endpoint or stream setup failed. |
+
+---
+
+## Validation and Testing
+
+Run the same checks before changing protocol, crypto, network, or archive behavior:
+
+```bash
+cargo fmt --all -- --check
+cargo test --workspace
+cargo clippy --workspace --all-targets
+```
+
+Focused areas worth testing when extending the engine:
+
+* metadata length and transfer-type validation
+* direct and pairing handshakes
+* wrong passphrase behavior
+* truncated frame and truncated file handling
+* zstd and raw frame decoding
+* directory extraction containment
+* symlink and hard-link archive rejection
+
+---
+
+## License
 
 This project is licensed under the MIT License. See [LICENSE](../LICENSE) for details.

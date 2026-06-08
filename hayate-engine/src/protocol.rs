@@ -68,7 +68,30 @@ pub struct Metadata {
 }
 
 impl Metadata {
+    /// Validates metadata fields before they are encoded or used to route a payload.
+    ///
+    /// This rejects empty or oversized names and transfer kinds outside the
+    /// protocol's currently defined file/directory variants.
+    pub fn validate(&self) -> Result<(), crate::EngineError> {
+        let name_len = self.filename.len();
+        if name_len == 0 || name_len > MAX_FILENAME_BYTES || name_len > u16::MAX as usize {
+            return Err(crate::EngineError::InvalidFrame(format!(
+                "invalid filename length: {name_len}"
+            )));
+        }
+        if self.transfer_type != TRANSFER_FILE && self.transfer_type != TRANSFER_DIR {
+            return Err(crate::EngineError::InvalidFrame(format!(
+                "invalid transfer type: 0x{:02x}",
+                self.transfer_type
+            )));
+        }
+        Ok(())
+    }
+
     /// Serialises to the plaintext metadata blob.
+    ///
+    /// Callers should validate metadata before encoding it. Metadata decoded
+    /// from the wire is validated by [`Self::decode`].
     pub fn encode(&self) -> Vec<u8> {
         let name_bytes = self.filename.as_bytes();
         let mut buf = Vec::with_capacity(2 + name_bytes.len() + 8 + 1);
@@ -106,10 +129,56 @@ impl Metadata {
                 .expect("slice len == 8"),
         );
         let transfer_type = raw[2 + name_len + 8];
+        if transfer_type != TRANSFER_FILE && transfer_type != TRANSFER_DIR {
+            return Err(crate::EngineError::InvalidFrame(format!(
+                "invalid transfer type: 0x{transfer_type:02x}"
+            )));
+        }
         Ok(Self {
             filename,
             total_size,
             transfer_type,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decode_rejects_unknown_transfer_type() {
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&4u16.to_be_bytes());
+        raw.extend_from_slice(b"name");
+        raw.extend_from_slice(&123u64.to_be_bytes());
+        raw.push(0xff);
+
+        let err = Metadata::decode(&raw).unwrap_err();
+        assert!(matches!(err, crate::EngineError::InvalidFrame(_)));
+    }
+
+    #[test]
+    fn validate_rejects_unknown_transfer_type() {
+        let meta = Metadata {
+            filename: "name".to_owned(),
+            total_size: 0,
+            transfer_type: 0xff,
+        };
+
+        let err = meta.validate().unwrap_err();
+        assert!(matches!(err, crate::EngineError::InvalidFrame(_)));
+    }
+
+    #[test]
+    fn validate_rejects_empty_filename() {
+        let meta = Metadata {
+            filename: String::new(),
+            total_size: 0,
+            transfer_type: TRANSFER_FILE,
+        };
+
+        let err = meta.validate().unwrap_err();
+        assert!(matches!(err, crate::EngineError::InvalidFrame(_)));
     }
 }

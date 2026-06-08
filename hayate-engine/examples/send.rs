@@ -5,8 +5,8 @@
 //! cargo run --example send <file_or_directory_path> <receiver_ip:port>
 //! ```
 
-use std::net::SocketAddr;
 use hayate::runner::HayateSender;
+use std::net::SocketAddr;
 
 #[compio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -20,13 +20,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Connecting and sending '{path}' to {target_addr}...");
 
-    let sender = HayateSender::new()
-        .target(target_addr)
-        .compress(true);
+    let sender = HayateSender::new().target(target_addr).compress(true);
 
-    let checksum = sender.send(path, |bytes| {
-        println!("Progress: {bytes} bytes transferred");
-    }).await?;
+    let checksum = sender
+        .send(path, |bytes| {
+            println!("Progress: {bytes} bytes transferred");
+        })
+        .await?;
 
     println!("Transfer complete!");
     println!("SHA-256 Checksum: {checksum}");

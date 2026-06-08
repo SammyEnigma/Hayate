@@ -170,6 +170,17 @@ A common question is: **Why does Hayate encrypt payloads using ChaCha20-Poly1305
 2. **Cryptographic Channel Binding**: To prevent MITM attacks, Hayate derives a shared key by salting a Diffie-Hellman key exchange with the user's code-phrase.
 3. **Payload Protection**: If an attacker intercepts the connection, they cannot decrypt the metadata or payload frames without knowing the code-phrase. The application-layer encryption acts as an authenticated channel-binding mechanism.
 
+### Protocol and File Safety
+
+Hayate treats the wire protocol as untrusted input, even on a LAN:
+
+* Metadata is encrypted and authenticated before the receiver sees filenames, transfer sizes, or transfer type.
+* Metadata transfer type is validated strictly: only file and directory payloads are accepted.
+* File transfers must finish with exactly the announced byte count.
+* Directory transfers are streamed as tar archives into the resolved output directory, and extraction creates that directory before writing entries.
+* Archive entries with absolute paths, `..` traversal, symlinks, or hard links are rejected instead of being unpacked.
+* Payload frames are length-capped and AEAD-authenticated before decompression or filesystem writes.
+
 ---
 
 ## ✦ Termux (Android) Usage
@@ -237,6 +248,14 @@ Using `just` recipes:
 just check     # Lints, formatting, and unit testing checks
 just build     # Build release CLI target
 just run -- --help  # Run built CLI help menu
+```
+
+For direct cargo workflows:
+
+```bash
+cargo fmt --all -- --check
+cargo test --workspace
+cargo clippy --workspace --all-targets
 ```
 
 ---

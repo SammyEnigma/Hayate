@@ -8,11 +8,10 @@ use std::{
 };
 
 use anyhow::{Result, bail};
-use compio::io::{AsyncReadExt, AsyncWriteExt};
 use hayate::{
-    EngineError, crypto, network,
-    protocol::{MAX_METADATA_ENCRYPTED, Metadata, PROTOCOL_VERSION, TRANSFER_DIR},
-    transfer, local_addr,
+    local_addr, network,
+    protocol::{Metadata, TRANSFER_DIR},
+    transfer,
 };
 
 use crate::{cli::ReceiveArgs, output};
@@ -54,9 +53,12 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
         output::ok(&format!("Connected to {peer}"));
 
         let (mut send_stream, mut recv_stream) = conn.accept_bi().await?;
-        let ((key, cipher_id), meta) =
-            handshake_receiver_split(&mut send_stream, &mut recv_stream, Some(code.as_str()))
-                .await?;
+        let ((key, cipher_id), meta) = transfer::handshake_receiver_split(
+            &mut send_stream,
+            &mut recv_stream,
+            Some(code.as_str()),
+        )
+        .await?;
         output::key_value("cipher", output::cipher_name(cipher_id));
 
         let accept = if args.auto_accept {
@@ -165,14 +167,19 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
             }
         };
 
-        let ((key, cipher_id), meta) =
-            match handshake_receiver_split(&mut send_stream, &mut recv_stream, None).await {
-                Ok(r) => r,
-                Err(e) => {
-                    output::err(&format!("Handshake failed: {e}"));
-                    continue;
-                }
-            };
+        let ((key, cipher_id), meta) = match transfer::handshake_receiver_split(
+            &mut send_stream,
+            &mut recv_stream,
+            None,
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                output::err(&format!("Handshake failed: {e}"));
+                continue;
+            }
+        };
 
         let accept = if args.auto_accept {
             true
@@ -251,76 +258,6 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-async fn handshake_receiver_split(
-    send: &mut compio_quic::SendStream,
-    recv: &mut compio_quic::RecvStream,
-    passphrase: Option<&str>,
-) -> Result<(([u8; 32], u8), Metadata), EngineError> {
-    // 1. Version + Sender Capability
-    let compio::BufResult(result, vbuf) = recv.read_exact(vec![0u8; 3]).await;
-    result.map_err(EngineError::Io)?;
-    let remote_ver = u16::from_be_bytes([vbuf[0], vbuf[1]]);
-    if remote_ver != PROTOCOL_VERSION {
-        return Err(EngineError::ProtocolMismatch {
-            local: PROTOCOL_VERSION,
-            remote: remote_ver,
-        });
-    }
-    let sender_cap = vbuf[2];
-    if sender_cap != crypto::CIPHER_CHACHA20 && sender_cap != crypto::CIPHER_AES256_GCM {
-        return Err(EngineError::Handshake(
-            "Unknown cipher capability sent by sender".into(),
-        ));
-    }
-
-    let selected_cipher =
-        if sender_cap == crypto::CIPHER_AES256_GCM && crypto::features::is_aes_hw_accelerated() {
-            crypto::CIPHER_AES256_GCM
-        } else {
-            crypto::CIPHER_CHACHA20
-        };
-
-    // 2. Key exchange
-    let compio::BufResult(result, peer_pub_vec) = recv.read_exact(vec![0u8; 32]).await;
-    result.map_err(EngineError::Io)?;
-    let mut peer_pub = [0u8; 32];
-    peer_pub.copy_from_slice(&peer_pub_vec);
-
-    let (secret, our_pub) = crypto::generate_keypair();
-    let compio::BufResult(result, _) = send.write_all(our_pub.to_vec()).await;
-    result.map_err(EngineError::Io)?;
-    let key = crypto::derive_key(secret, &peer_pub, passphrase)?;
-
-    // 3. Send selected cipher
-    let compio::BufResult(result, _) = send.write_all(vec![selected_cipher]).await;
-    result.map_err(EngineError::Io)?;
-
-    // 4. Metadata
-    let compio::BufResult(result, lbuf) = recv.read_exact(vec![0u8; 4]).await;
-    result.map_err(EngineError::Io)?;
-    let enc_len = u32::from_be_bytes([lbuf[0], lbuf[1], lbuf[2], lbuf[3]]) as usize;
-    if enc_len == 0 || enc_len > MAX_METADATA_ENCRYPTED {
-        return Err(EngineError::InvalidFrame(format!(
-            "invalid metadata length: {enc_len}"
-        )));
-    }
-    let compio::BufResult(result, enc) = recv.read_exact(vec![0u8; enc_len]).await;
-    result.map_err(EngineError::Io)?;
-    let plain = match crypto::decrypt_metadata(&key, selected_cipher, &enc) {
-        Ok(p) => p,
-        Err(e) => {
-            if passphrase.is_some() {
-                return Err(EngineError::InvalidPassphrase);
-            } else {
-                return Err(e);
-            }
-        }
-    };
-    let meta = Metadata::decode(&plain)?;
-
-    Ok(((key, selected_cipher), meta))
-}
 
 fn prompt_accept(meta: &Metadata, peer: SocketAddr) -> Result<bool> {
     let kind = if meta.transfer_type == TRANSFER_DIR {
