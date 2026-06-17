@@ -2,9 +2,9 @@
 //!
 //! ## compio I/O model
 //!
-//! compio is completion-based (io_uring / IOCP).  The kernel holds a
+//! compio is completion-based (io_uring / IOCP). The kernel holds a
 //! reference to the I/O buffer until the completion event fires, so every
-//! buffer must be **owned** and passed by value to the I/O call.  The
+//! buffer must be **owned** and passed by value to the I/O call. The
 //! return type is `BufResult<T, B>` = `(Result<T, io::Error>, B)` where `B`
 //! is the buffer returned after the kernel is done with it.
 
@@ -439,7 +439,8 @@ where
 
     let pool = crate::pool::BufferPool::new(32, CHUNK_SIZE);
 
-    let (chunk_tx, chunk_rx) = flume::bounded::<Result<(usize, Vec<u8>), io::Error>>(16);
+    let (chunk_tx, chunk_rx) =
+        flume::bounded::<Result<(usize, Vec<u8>, usize, bool), io::Error>>(16);
     let (hash_tx, hash_rx) = flume::bounded::<String>(1);
 
     // Reader task: keep a small read-ahead queue so disk latency overlaps with
@@ -473,7 +474,7 @@ where
                     reads.push_back(read_future(f, buf, p));
                 }
 
-                while let Some((result, mut buf, _)) = reads.next().await {
+                while let Some((result, buf, _)) = reads.next().await {
                     match result {
                         Ok(n) => {
                             if n == 0 {
@@ -483,10 +484,13 @@ where
                             if n < CHUNK_SIZE {
                                 file_ended = true;
                             }
-                            buf.truncate(n);
-                            ctx.update(&buf);
+                            ctx.update(&buf[..n]);
 
-                            if chunk_tx.send_async(Ok((index, buf))).await.is_err() {
+                            if chunk_tx
+                                .send_async(Ok((index, buf, n, true)))
+                                .await
+                                .is_err()
+                            {
                                 break;
                             }
                             index += 1;
@@ -522,7 +526,12 @@ where
                                 break;
                             }
                             ctx.update(&data);
-                            if chunk_tx.send_async(Ok((index, data))).await.is_err() {
+                            let len = data.len();
+                            if chunk_tx
+                                .send_async(Ok((index, data, len, false)))
+                                .await
+                                .is_err()
+                            {
                                 break;
                             }
                             index += 1;
@@ -565,7 +574,7 @@ where
                 }
             };
             while let Ok(res) = chunk_rx.recv() {
-                let (index, chunk) = match res {
+                let (index, chunk, chunk_len, pooled) = match res {
                     Ok(val) => val,
                     Err(e) => {
                         let _ = result_tx.send(Err(EngineError::Io(e)));
@@ -573,30 +582,30 @@ where
                     }
                 };
 
-                let chunk_len = chunk.len();
+                let chunk_data = &chunk[..chunk_len];
                 let plain_frame: Vec<u8> = if do_compress {
-                    match zstd::encode_all(chunk.as_slice(), 1) {
-                        Ok(compressed) if compressed.len() < chunk.len() => {
+                    match zstd::encode_all(chunk_data, 1) {
+                        Ok(compressed) if compressed.len() < chunk_len => {
                             let mut pf = Vec::with_capacity(1 + compressed.len());
                             pf.push(FRAME_ZSTD);
                             pf.extend_from_slice(&compressed);
                             pf
                         }
                         _ => {
-                            let mut pf = Vec::with_capacity(1 + chunk.len());
+                            let mut pf = Vec::with_capacity(1 + chunk_len);
                             pf.push(FRAME_RAW);
-                            pf.extend_from_slice(&chunk);
+                            pf.extend_from_slice(chunk_data);
                             pf
                         }
                     }
                 } else {
-                    let mut pf = Vec::with_capacity(1 + chunk.len());
+                    let mut pf = Vec::with_capacity(1 + chunk_len);
                     pf.push(FRAME_RAW);
-                    pf.extend_from_slice(&chunk);
+                    pf.extend_from_slice(chunk_data);
                     pf
                 };
 
-                if chunk.capacity() >= CHUNK_SIZE {
+                if pooled {
                     pool.release(chunk);
                 }
 

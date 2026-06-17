@@ -1,44 +1,30 @@
 [package]
-
-name = 'hayate-cli'
+name = "hayate-cli"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = 'High-performance command-line utility for direct LAN file transfer.'
-documentation = 'https://docs.rs/hayate-cli'
-readme = '../README.md'
-keywords = ['quic', 'transfer', 'cli', 'lan', 'utility']
-categories = ['command-line-utilities', 'network-programming']
+description = "High-performance command-line utility for direct LAN file transfer."
+documentation = "https://docs.rs/hayate-cli"
+readme = "../README.md"
+keywords = ["quic", "transfer", "cli", "lan", "utility"]
+categories = ["command-line-utilities", "network-programming"]
 publish = false
 
 [[bin]]
-
-name = 'hayate'
-path = 'src/main.rs'
+name = "hayate"
+path = "src/main.rs"
 
 [dependencies]
-
 hayate = { path = "../hayate-engine", version = "2.1.1" }
-compio = { version = "0.19.1", features = [
-  'macros',
-  'fs',
-  'net',
-  'runtime',
-  'time',
-] }
-compio-quic = { version = "0.8.0", default-features = false, features = [
-  'ring',
-] }
-compio-runtime = { version = "0.12.2" }
 anyhow = { workspace = true }
-clap = { version = '4', features = ['derive', 'env', 'color'] }
-indicatif = { version = '0.18', features = ['improved_unicode'] }
-console = '0.16'
-tar = '0.4'
-walkdir = '2'
+clap = { version = "4", features = ["color", "derive", "env"] }
+compio = { workspace = true }
+compio-quic = { workspace = true }
+console = "0.16"
+flume = "0.12.0"
 futures-util = { workspace = true }
-flume = '0.12.0'
+indicatif = { version = "0.18", features = ["improved_unicode"] }
 rand = { workspace = true }

@@ -11,9 +11,8 @@ repository = "https://github.com/ShiinaSaku/Hayate"
 rust-version = "1.95"
 
 [workspace.dependencies]
-# async runtime: thread-per-core, io_uring / IOCP / kqueue
-compio = { version = "0.19.1", features = ["macros", "fs", "net", "runtime"] }
-compio-runtime = { version = "0.12.2" }
+# Completion-based async I/O and QUIC.
+compio = { version = "0.19.1", features = ["fs", "macros", "net", "runtime", "time"] }
 compio-quic = { version = "0.8.0", default-features = false, features = [
   "ring",
 ] }
@@ -28,14 +27,14 @@ quinn-proto = { version = "0.11", default-features = false, features = [
   "log",
 ] }
 
-# TLS
+# Ephemeral TLS for QUIC.
 rcgen = { version = "0.14", features = ["x509-parser"] }
 rustls = { version = "0.23", default-features = false, features = [
   "ring",
   "std",
 ] }
 
-# Crypto: X25519 ECDH + ChaCha20-Poly1305 AEAD + HKDF-SHA256
+# Application-layer crypto.
 x25519-dalek = { version = "2", features = [
   "reusable_secrets",
   "static_secrets",
@@ -47,18 +46,11 @@ rand = { version = "0.10" }
 ring = { version = "0.17" }
 socket2 = { version = "0.6" }
 
-# Compression
+# Data handling and diagnostics.
 zstd = { version = "0.13", default-features = false }
-
-# Error handling
 anyhow = "1"
 thiserror = "2"
-
-# Checksum
 hex = "0.4"
-
-# Serialization (binary protocol framing)
-bytes = "1"
 
 [profile.release]
 opt-level = 3

@@ -16,63 +16,53 @@ categories = ["network-programming", "asynchronous"]
 name = "hayate"
 crate-type = ["lib"]
 
+[features]
+benchmarks = []
+
 [dependencies]
-# Asynchronous Runtime (Proactor-based Thread-Per-Core)
-compio = { workspace = true, features = ["time", "fs", "net", "runtime", "macros"] }
-compio-runtime = { workspace = true }
+# Runtime and QUIC transport.
+compio = { workspace = true }
 compio-quic = { workspace = true }
 futures-util = { workspace = true }
 
-# QUIC Protocol State Machine & TLS Core
+# QUIC protocol and TLS.
 quinn-proto = { workspace = true }
 rcgen = { workspace = true }
 rustls = { workspace = true }
 
-# Cryptography, Key Exchange & Hashing
-x25519-dalek = { workspace = true }
+# Cryptography.
 chacha20poly1305 = { workspace = true }
 hkdf = { workspace = true }
-sha2 = { workspace = true }
 ring = { workspace = true }
+sha2 = { workspace = true }
+x25519-dalek = { workspace = true }
 
-# Directory Packaging & Safe Extraction
+# Directory packaging and safe extraction.
 tar = "0.4"
 walkdir = "2"
 
-# Local Network Utilities & IP Discovery
+# Local network utilities.
 get_if_addrs = "0.5.3"
 local-ip-address = "0.6.13"
-
-# Networking & Byte Buffering
 socket2 = { workspace = true }
-bytes = { workspace = true }
 
-# Compression
-zstd = { workspace = true }
-
-# Asynchronous Synchronization & Messaging
+# Compression, channels, and errors.
 flume = "0.12.0"
-rand = { workspace = true }
-
-# Error Handling & Hex Serialization
+zstd = { workspace = true }
 anyhow = { workspace = true }
-thiserror = { workspace = true }
 hex = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
-compio = { version = "0.19.1", features = [
-  "macros",
-  "fs",
-  "net",
-  "runtime",
-  "time",
-] }
+compio = { workspace = true }
 divan = { version = "4.7.0", package = "codspeed-divan-compat" }
 
 [[bench]]
 name = "crypto"
 harness = false
+required-features = ["benchmarks"]
 
 [[bench]]
 name = "protocol"
 harness = false
+required-features = ["benchmarks"]

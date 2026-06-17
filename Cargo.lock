@@ -1159,12 +1159,10 @@ name = "hayate"
 version = "2.1.1"
 dependencies = [
  "anyhow",
- "bytes",
  "chacha20poly1305",
  "codspeed-divan-compat",
  "compio",
  "compio-quic",
- "compio-runtime",
  "flume",
  "futures-util",
  "get_if_addrs",
@@ -1172,7 +1170,6 @@ dependencies = [
  "hkdf",
  "local-ip-address",
  "quinn-proto",
- "rand 0.10.1",
  "rcgen",
  "ring",
  "rustls",
@@ -1193,15 +1190,12 @@ dependencies = [
  "clap",
  "compio",
  "compio-quic",
- "compio-runtime",
  "console",
  "flume",
  "futures-util",
  "hayate",
  "indicatif",
  "rand 0.10.1",
- "tar",
- "walkdir",
 ]
 
 [[package]]

@@ -1,13 +1,11 @@
 //! Streaming tar archive reader for directory transfers.
 //!
-//! `TarReader` walks a directory tree using `std::fs` (synchronous, done on a
-//! compio blocking thread to avoid blocking the async executor) and yields
-//! raw tar bytes through a `std::io::Read` adapter.  The caller feeds those
-//! bytes into the encrypted send pipeline.
+//! Directory packaging uses the synchronous `tar` crate on a dedicated thread
+//! and forwards archive chunks into the encrypted async send pipeline.
 //!
-//! For extraction, `extract_tar` reads from an `AsyncRead` and writes files
-//! via `compio::fs::OpenOptions` so every file write is a true async
-//! completion operation.
+//! Extraction also runs on a dedicated thread because archive parsing and
+//! filesystem traversal are synchronous. The extractor validates paths before
+//! unpacking entries.
 
 use std::{
     io,
@@ -21,8 +19,8 @@ use crate::EngineError;
 // ---------------------------------------------------------------------------
 
 /// Generates a POSIX ustar tar stream for `root_dir` and writes it into `out`.
-/// This function is entirely synchronous and must be called inside
-/// `compio::runtime::spawn_blocking` or on a dedicated std thread.
+/// This function is entirely synchronous and must be called on a dedicated
+/// thread when used from async code.
 pub fn write_tar_sync(root_dir: &Path, out: &mut impl io::Write) -> Result<u64, io::Error> {
     let mut builder = tar::Builder::new(out);
     builder.follow_symlinks(false);

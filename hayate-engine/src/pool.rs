@@ -37,7 +37,7 @@ impl BufferPool {
     pub fn release(&self, mut buf: Vec<u8>) {
         if buf.capacity() < self.buffer_size {
             buf = vec![0u8; self.buffer_size];
-        } else {
+        } else if buf.len() != self.buffer_size {
             buf.resize(self.buffer_size, 0);
         }
         let _ = self.tx.send(buf);

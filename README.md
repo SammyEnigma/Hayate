@@ -1,4 +1,4 @@
-# Hayate (はやて)
+# Hayate
 
 [![CI](https://github.com/ShiinaSaku/Hayate/actions/workflows/ci.yml/badge.svg)](https://github.com/ShiinaSaku/Hayate/actions/workflows/ci.yml)
 [![Builds](https://github.com/ShiinaSaku/Hayate/actions/workflows/builds.yml/badge.svg)](https://github.com/ShiinaSaku/Hayate/actions/workflows/builds.yml)
@@ -7,283 +7,167 @@
 [![Release](https://img.shields.io/github/v/release/ShiinaSaku/Hayate?include_prereleases&sort=semver)](https://github.com/ShiinaSaku/Hayate/releases)
 [![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/ShiinaSaku/Hayate?utm_source=badge)
 
-> Encrypted, compressed, blazing-fast cross-device file transfer for local networks, terminals, and Termux.
+Hayate is a high-performance CLI for encrypted file and directory transfer across local networks. It uses QUIC over `compio-quic`, completion-based I/O through `compio`, an application-layer X25519/HKDF/AEAD handshake, optional zstd compression, and safe tar streaming for directories.
 
 ```text
-  __   __     _____    __  __    _____    _______     _____  
- /\_\ /_/\   /\___/\ /\  /\  /\ /\___/\ /\_______)\ /\_____\ 
-( ( (_) ) ) / / _ \ \\ \ \/ / // / _ \ \\(___  __\/( (_____/ 
- \ \___/ /  \ \(_)/ / \ \__/ / \ \(_)/ /  / / /     \ \__\   
- / / _ \ \  / / _ \ \  \__/ /  / / _ \ \ ( ( (      / /__/_  
-( (_( )_) )( (_( )_) ) / / /  ( (_( )_) ) \ \ \    ( (_____\ 
- \/_/ \_\/  \/_/ \_\/  \/_/    \/_/ \_\/  /_/_/     \/_____/ 
-
-   Swift File Transfer | Secure, Encrypted, & Compressed
+  __   __     _____    __  __    _____    _______     _____
+ /\_\ /_/\   /\___/\ /\  /\  /\ /\___/\ /\_______)\ /\_____\
+( ( (_) ) ) / / _ \ \\ \ \/ / // / _ \ \\(___  __\/( (_____/
+ \ \___/ /  \ \(_)/ / \ \__/ / \ \(_)/ /  / / /     \ \__\
+ / / _ \ \  / / _ \ \  \__/ /  / / _ \ \ ( ( (      / /__/_
+( (_( )_) )( (_( )_) ) / / /  ( (_( )_) ) \ \ \    ( (_____\
+ \/_/ \_\/  \/_/ \_\/  \/_/    \/_/ \_\/  /_/_/     \/_____/
 ```
 
-Hayate is a zero-config, high-performance CLI for sending files and directories between machines on a local network. Built on **QUIC** via `compio-quic` and `quinn-proto`, with completion-based asynchronous I/O (`io_uring` on Linux/Android, `IOCP` on Windows, `kqueue` on macOS), Hayate is designed to keep fast Wi-Fi and Ethernet links saturated without sacrificing safety.
+## Features
 
----
+- Direct file and directory transfer over QUIC.
+- Pairing-code discovery for LAN workflows where users do not want to exchange IP addresses.
+- Application-layer encryption for metadata and payload frames using ephemeral X25519 key agreement and AEAD ciphers.
+- Optional zstd level 1 compression, skipped automatically for common already-compressed formats.
+- Progress output with transfer rate, elapsed time, ETA, and headless-friendly `--no-progress`.
+- Safe directory extraction that rejects absolute paths, `..`, symlinks, and hard links.
+- Release binaries for Linux, macOS, Windows, and Android/Termux.
 
-## ✦ Features
+## Quick Start
 
-* **Authenticated Encryption**: Ephemeral `X25519` key exchange (DH) and `ChaCha20-Poly1305` AEAD payload encryption.
-* **Proactor Async Engine**: Driven by `compio` thread-per-core runtime for zero-cost async I/O.
-* **Terminal-Safe Progress**: Enabled by default, with transfer rate, ETA, elapsed time, and connection/pairing spinners that behave consistently across desktop terminals and Termux.
-* **Zero-Config Pairing**: Secure LAN pairing utilizing random code-phrase broadcasters—no manual IP swapping required.
-* **Hardware Hashing**: Hashing utilizing `ring::digest` hardware-accelerated SHA-256 for integrity verification.
-* **Smart Compression**: Concurrent `zstd` level 1 compression that automatically skips pre-compressed file extensions (e.g., `.zip`, `.mp4`, `.png`).
-* **Direct Mode**: Support for direct peer connections via IPv4 and IPv6 (including bracketed IPv6 syntax like `[fd00::1]:50001`).
-* **Cross-Platform**: Binary packages for macOS, Linux, Windows, and Android (Termux).
-
----
-
-## ✦ CLI Experience
-
-Hayate keeps normal commands focused on the active transfer. The banner is shown only for help-oriented entry points:
+Pairing mode lets both sides use a shared phrase:
 
 ```bash
-hayate
-hayate --help
-hayate help
-hayate receive --help
-```
-
-During transfers, Hayate shows connection and pairing spinners followed by a terminal-safe progress bar:
-
-```text
-   ⠋ [00:00:04] [==============================>---------] 1.15 GiB/1.46 GiB (78%) 14.2 MiB/s ETA 22s
-```
-
-* **Consistent Output**: `send`, `receive`, and `discover` start directly with useful status lines instead of repeating the banner.
-* **Steady Tick**: Spinners animate at a steady cadence while connecting, pairing, or transferring.
-* **Headless Friendly**: Suppress visual indicators with `--no-progress` or the `--no-tui` alias.
-* **Receiver Lifecycle**: `hayate receive` exits after one successful transfer, but keeps listening after failed connections, failed handshakes, rejected transfers, or dropped transfers.
-
----
-
-## ✦ Quick Start
-
-### 1. Pairing Mode
-
-Use code-phrase pairing when you do not want to exchange IP addresses manually.
-
-**On the Receiver:**
-```bash
+# Receiver
 hayate receive --code "apple-bravo-charlie" --output ~/Downloads
+
+# Sender
+hayate send ./photos.zip --code "apple-bravo-charlie"
 ```
 
-**On the Sender:**
+Direct mode skips discovery and connects to a known receiver address:
+
 ```bash
-hayate send ./holiday_photos.zip --code "apple-bravo-charlie"
-```
-Hayate scans the local network, pairs the nodes with the shared code phrase, performs the key exchange, and transfers the payload.
-
-### 2. Direct Mode
-
-Specify the receiver address directly to skip pairing broadcasts.
-
-**On the Receiver:**
-```bash
+# Receiver
 hayate receive --port 50001
+
+# Sender
+hayate send ./archive.tar 192.168.1.50:50001
 ```
 
-**On the Sender:**
-```bash
-hayate send ./large_archive.tar --peer 192.168.1.50:50001
-```
-
-You can also pass the target positionally:
+You can also use `--peer` instead of positional `TARGET`:
 
 ```bash
-hayate send ./large_archive.tar 192.168.1.50:50001
+hayate send ./archive.tar --peer 192.168.1.50:50001
 ```
 
-Use either positional `TARGET` or `--peer`, not both.
-
----
-
-## ✦ CLI Command Reference
-
-Run `hayate` or `hayate --help` for the top-level help menu. Normal commands do not print the banner; help commands do.
-
-### `hayate receive`
-Starts a receiver and waits for one incoming file or directory. After a successful receive it exits. If a connection attempt fails, the receiver reports the error and keeps listening.
-
-Aliases: `recv`, `rx`
+## Commands
 
 ```text
-Usage: hayate receive [OPTIONS]
+hayate receive [OPTIONS]
 
 Options:
-  -b, --bind <BIND>      IP address to bind the QUIC listener [env: HAYATE_BIND=] [default: 0.0.0.0]
+  -b, --bind <BIND>      IP address to bind [env: HAYATE_BIND=] [default: 0.0.0.0]
   -p, --port <PORT>      Port to listen on [env: HAYATE_PORT=] [default: 50001]
-  -o, --output <OUTPUT>  Directory to save received files into [default: .]
-      --auto-accept      Auto-accept all incoming transfers without prompting
-      --no-progress      Suppress the progress bar and spinner output
-      --code <CODE>      Cryptographic code-phrase for pairing
-  -h, --help             Print help
+  -o, --output <OUTPUT>  Directory for received files [default: .]
+      --auto-accept      Accept transfers without prompting
+      --no-progress      Disable progress UI
+      --code <CODE>      Pairing code phrase
 ```
-
-### `hayate send`
-Sends a file or directory to a receiver.
-
-Alias: `tx`
 
 ```text
-Usage: hayate send [OPTIONS] <PATH> [TARGET]
-
-Arguments:
-  <PATH>    Path to the file or directory to send
-  [TARGET]  Receiver address in the form ip:port or hostname:port
+hayate send [OPTIONS] <PATH> [TARGET]
 
 Options:
-      --peer <PEER>  Receiver address in the form ip:port or hostname:port (compat option)
-      --code <CODE>  Cryptographic code-phrase for pairing
-  -z, --compress     Compress chunks with zstd level 1 before encrypting
-      --no-progress  Suppress the progress bar and spinner output
-  -h, --help         Print help
+      --peer <PEER>      Receiver address, equivalent to TARGET
+      --code <CODE>      Pairing code phrase
+  -z, --compress         Compress chunks before encryption when beneficial
+      --no-progress      Disable progress UI
 ```
-
-`TARGET` and `--peer` are mutually exclusive. If neither is supplied, Hayate generates a pairing code and waits for a receiver using `hayate receive --code "<code>"`.
-
-### `hayate discover`
-Scans the local network subnet for active receivers.
-
-Alias: `scan`
 
 ```text
-Usage: hayate discover [OPTIONS]
+hayate discover [OPTIONS]
 
 Options:
-  -t, --timeout <TIMEOUT>  Network scan timeout in seconds [default: 3]
-      --cidr <CIDR>        Override the subnet CIDR to scan (e.g. 192.168.1.0/24)
-  -h, --help               Print help
+  -t, --timeout <TIMEOUT>  Scan timeout in seconds [default: 3]
+      --cidr <CIDR>        Override subnet CIDR, e.g. 192.168.1.0/24
 ```
 
----
+`TARGET` and `--peer` are mutually exclusive. If neither is supplied, `hayate send` generates a pairing phrase and waits for a receiver using that phrase.
 
-## ✦ Security Threat Model
+## Security Model
 
-A common question is: **Why does Hayate encrypt payloads using ChaCha20-Poly1305 if QUIC already encrypts all traffic via TLS 1.3?**
+Hayate uses QUIC TLS 1.3 for transport encryption, but its TLS certificates are self-signed and ephemeral for zero-configuration LAN use. Peer authentication therefore comes from Hayate's application-layer handshake.
 
-1. **Unauthenticated TLS**: Hayate uses self-signed ephemeral certificates generated dynamically. Because there is no PKI or Certificate Authority (CA) verifying these certificates on a local network, standard TLS is vulnerable to **Man-in-the-Middle (MITM)** spoofing attacks.
-2. **Cryptographic Channel Binding**: To prevent MITM attacks, Hayate derives a shared key by salting a Diffie-Hellman key exchange with the user's code-phrase.
-3. **Payload Protection**: If an attacker intercepts the connection, they cannot decrypt the metadata or payload frames without knowing the code-phrase. The application-layer encryption acts as an authenticated channel-binding mechanism.
+- The sender and receiver perform ephemeral X25519 key agreement per transfer.
+- A shared AEAD key is derived with HKDF-SHA256.
+- Pairing phrases are used as HKDF salt when present.
+- Metadata is encrypted before filenames, sizes, or transfer type are exposed.
+- Payload frames are length-capped and authenticated before decompression or filesystem writes.
+- Receivers can reject a transfer after decrypting metadata and before accepting payload bytes.
 
-### Protocol and File Safety
+Direct mode without a shared code phrase does not authenticate peer identity beyond the QUIC connection. Use pairing mode with a strong phrase when the local network is not trusted.
 
-Hayate treats the wire protocol as untrusted input, even on a LAN:
+## Termux
 
-* Metadata is encrypted and authenticated before the receiver sees filenames, transfer sizes, or transfer type.
-* Metadata transfer type is validated strictly: only file and directory payloads are accepted.
-* File transfers must finish with exactly the announced byte count.
-* Directory transfers are streamed as tar archives into the resolved output directory, and extraction creates that directory before writing entries.
-* Archive entries with absolute paths, `..` traversal, symlinks, or hard links are rejected instead of being unpacked.
-* Payload frames are length-capped and AEAD-authenticated before decompression or filesystem writes.
+Android and mobile networks often restrict broadcast discovery. Direct mode is usually more reliable:
 
----
-
-## ✦ Termux (Android) Usage
-
-Android can limit multicast and broadcast discovery depending on device and network policy. Direct IP connections are the most reliable option:
-
-**On Phone (Receiver):**
 ```bash
+# Phone
 ./hayate receive --port 50002 --auto-accept --no-progress
+
+# Computer
+hayate send ./document.pdf --peer 192.168.1.13:50002
 ```
 
-**On Computer (Sender):**
-```bash
-hayate send ./documents.pdf --peer 192.168.1.13:50002
-```
+## Installation
 
-`--no-progress` is recommended for scripted Termux runs or terminals that do not redraw progress output reliably.
+macOS, Linux, and Termux:
 
----
-
-## ✦ Installation
-
-You can install Hayate instantly using the automated installation scripts:
-
-### macOS, Linux, and Termux (bash)
-Run the following command to download and install the latest binary to `/usr/local/bin` (or `$PREFIX/bin` in Termux):
 ```bash
 curl -sSf https://raw.githubusercontent.com/ShiinaSaku/Hayate/refs/heads/master/scripts/install.sh | bash
 ```
-Source code: [`scripts/install.sh`](scripts/install.sh)
 
-### Windows (PowerShell)
-Run the following command in PowerShell to download and install the Windows executable:
+Windows PowerShell:
+
 ```powershell
 irm https://raw.githubusercontent.com/ShiinaSaku/Hayate/refs/heads/master/scripts/install.ps1 | iex
 ```
-Source code: [`scripts/install.ps1`](scripts/install.ps1)
 
-### Manual Installation
-Alternatively, you can manually download and configure precompiled binaries from the [Releases](https://github.com/ShiinaSaku/Hayate/releases) page.
+Manual binaries are available on the [releases page](https://github.com/ShiinaSaku/Hayate/releases).
 
----
+## Build From Source
 
-## ✦ Building from Source
+Requirements:
 
-### Requirements
-* **Rust compiler**: Stable 1.95+.
-* **just** (optional, command runner).
+- Rust 1.95 or newer.
+- `just` is optional.
 
-### Build steps
 ```bash
-# Clone the repository
 git clone https://github.com/ShiinaSaku/Hayate.git
 cd Hayate
-
-# Compile the release CLI binary
 cargo build --release -p hayate-cli
-
-# The optimized binary will be located at:
-# target/release/hayate
 ```
 
-Using `just` recipes:
-```bash
-just check     # Lints, formatting, and unit testing checks
-just build     # Build release CLI target
-just run -- --help  # Run built CLI help menu
-```
-
-For direct cargo workflows:
+Useful development commands:
 
 ```bash
 cargo fmt --all -- --check
-cargo test --workspace
-cargo clippy --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --all-targets
 ```
 
----
+With `just`:
 
-## ✦ Acknowledgements & Special Thanks
+```bash
+just check
+just build
+just run -- --help
+```
 
-Hayate stands on the shoulders of giants. Special thanks to the authors and maintainers of these incredible Rust crates that make this project possible:
+## Workspace
 
-* **[compio](https://github.com/compio-rs/compio)**: For providing the completion-based proactor async I/O runtime (`io_uring`/`IOCP`/`kqueue`).
-* **[quinn-proto](https://github.com/quinn-rs/quinn)**: For the high-performance, protocol-correct QUIC state machine.
-* **[rustls](https://github.com/rustls/rustls)**: For memory-safe, modern TLS 1.3 protocol support.
-* **[ring](https://github.com/briansmith/ring)**: For robust and fast hardware-accelerated cryptographic primitives.
-* **[dalek-cryptography](https://github.com/dalek-cryptography)** (`x25519-dalek`): For secure Curve25519 Diffie-Hellman exchanges.
-* **[RustCrypto](https://github.com/RustCrypto)** (`chacha20poly1305`): For pure-Rust AEAD encryption/decryption primitives.
-* **[clap](https://github.com/clap-rs/clap)**: For parsing command-line parameters elegantly.
-* **[indicatif](https://github.com/console-rs/indicatif)**: For the smooth terminal progress indicators.
-* **[zstd-rs](https://github.com/gyscos/zstd-rs)**: For the lossless compression algorithms.
-* **[rcgen](https://github.com/est31/rcgen)**: For runtime self-signed X.509 certificate generation.
+- `hayate-engine`: reusable Rust library published as `hayate`.
+- `hayate-cli`: command-line application binary named `hayate`.
 
----
+The engine expects public async APIs to run inside a `compio` runtime, usually via `#[compio::main]` or `compio::runtime::Runtime::new()?.block_on(...)`.
 
-## ✦ Changelog
+## Acknowledgements
 
-See [CHANGELOG.md](CHANGELOG.md) for a list of notable changes in each version.
-
----
-
-## ✦ License
-
-MIT. See [LICENSE](LICENSE) for details.
+Hayate builds on `compio`, `compio-quic`, `quinn-proto`, `rustls`, `ring`, `x25519-dalek`, RustCrypto AEAD crates, `clap`, `indicatif`, `zstd-rs`, and `rcgen`.
