@@ -1,5 +1,15 @@
+[changelog]
+commit_parsers = [
+    { message = "^feat", group = "added" },
+    { message = "^refactor", group = "changed" },
+    { message = "^changed", group = "changed" },
+    { message = "^deprecated", group = "deprecated" },
+    { message = "^fix", group = "fixed" },
+    { message = "^security", group = "security" },
+    { message = "^.*", group = "other" },
+]
+
 [workspace]
-changelog_config = "cliff.toml"
 changelog_path = "CHANGELOG.md"
 dependencies_update = true
 git_release_enable = true
