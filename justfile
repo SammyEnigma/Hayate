@@ -20,6 +20,10 @@ check: fmt-check clippy test
 build target="hayate":
     cargo build --release -p hayate-cli
 
+build-android:
+    rustup target add aarch64-linux-android
+    cargo ndk -t aarch64-linux-android build --release --bin hayate
+
 run *args:
     cargo run -p hayate-cli -- {{args}}
 

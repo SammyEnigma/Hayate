@@ -42,23 +42,23 @@ parse_unconventional = true
 filter_unconventional = false
 # regex for preprocessing the commit messages
 commit_preprocessors = [
-    # Replace issue numbers
-    # { pattern = '\((\w+\s)?#([0-9]+)\)', replace = "([#${2}](https://github.com/ShiinaSaku/Hayate/issues/${2}))" },
+  # Replace issue numbers
+  # { pattern = '\((\w+\s)?#([0-9]+)\)', replace = "([#${2}](https://github.com/ShiinaSaku/Hayate/issues/${2}))" },
 ]
 # regex for parsing and grouping commits
 commit_parsers = [
-    { message = "^feat", group = "✦ Features" },
-    { message = "^fix", group = "✦ Bug Fixes" },
-    { message = "^doc", group = "✦ Documentation" },
-    { message = "^perf", group = "✦ Performance" },
-    { message = "^refactor", group = "✦ Refactoring & Code Quality" },
-    { message = "^style", group = "✦ Styling" },
-    { message = "^test", group = "✦ Testing" },
-    { message = "^chore\\(release\\): prepare for", skip = true },
-    { message = "^chore\\(deps\\)", group = "✦ Dependency Updates" },
-    { message = "^chore|^ci|^build", group = "✦ Maintenance & CI/CD" },
-    { message = "^dist", skip = true },
-    { body = ".*", group = "Other" },
+  { message = "^feat", group = "✦ Features" },
+  { message = "^fix", group = "✦ Bug Fixes" },
+  { message = "^doc", group = "✦ Documentation" },
+  { message = "^perf", group = "✦ Performance" },
+  { message = "^refactor", group = "✦ Refactoring & Code Quality" },
+  { message = "^style", group = "✦ Styling" },
+  { message = "^test", group = "✦ Testing" },
+  { message = "^chore\\(release\\): prepare for", skip = true },
+  { message = "^chore\\(deps\\)", group = "✦ Dependency Updates" },
+  { message = "^chore|^ci|^build", group = "✦ Maintenance & CI/CD" },
+  { message = "^dist", skip = true },
+  { body = ".*", group = "Other" },
 ]
 # protect breaking changes from being skipped group
 protect_breaking_commits = false

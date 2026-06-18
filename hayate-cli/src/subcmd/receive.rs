@@ -17,15 +17,33 @@ use crate::{cli::ReceiveArgs, output};
 
 pub async fn run(args: ReceiveArgs) -> Result<()> {
     if let Some(code) = &args.code {
+        // ── Pairing-code mode ────────────────────────────────────────
         output::stage("pairing", format!("scanning for code \"{code}\""));
+        let spinner = if args.no_progress {
+            None
+        } else {
+            let s = output::spinner("Discovering");
+            s.set_message("listening for sender broadcast…");
+            Some(s)
+        };
         let peer_addr = match hayate::discovery::listen_for_broadcast(
             Some(code.clone()),
             Duration::from_secs(30),
         )
         .await?
         {
-            Some((_name, addr, _os)) => addr,
-            None => bail!("Timed out waiting for sender broadcast."),
+            Some((_name, addr, _os)) => {
+                if let Some(s) = &spinner {
+                    s.finish_and_clear();
+                }
+                addr
+            }
+            None => {
+                if let Some(s) = &spinner {
+                    s.finish_and_clear();
+                }
+                bail!("Timed out waiting for sender broadcast.");
+            }
         };
 
         output::stage("connect", format!("dialing sender at {peer_addr}"));
@@ -52,14 +70,30 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
         output::ok(&format!("Connected to {peer}"));
 
         let (mut send_stream, mut recv_stream) = conn.accept_bi().await?;
+
+        // ── Handshake ────────────────────────────────────────────────
+        output::stage("handshake", "negotiating cipher…");
         let ((key, cipher_id), meta) = transfer::handshake_receiver_split(
             &mut send_stream,
             &mut recv_stream,
             Some(code.as_str()),
         )
         .await?;
-        output::key_value("cipher", output::cipher_name(cipher_id));
-        output::key_value("hash", &meta.hash_algo);
+
+        // ── Transfer offer card ──────────────────────────────────────
+        let kind = if meta.transfer_type == TRANSFER_DIR {
+            "directory"
+        } else {
+            "file"
+        };
+        output::print_transfer_offer(
+            &meta.filename,
+            meta.total_size,
+            kind,
+            peer,
+            output::cipher_name(cipher_id),
+            &meta.hash_algo,
+        );
 
         let dest = if args.auto_accept {
             Some(resolve_output(&args.output, &meta)?)
@@ -76,9 +110,9 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
         }
         let dest = dest.unwrap();
 
+        // ── Receive ──────────────────────────────────────────────────
         output::stage("receive", &meta.filename);
         output::key_value("output", dest.display());
-        output::key_value("size", output::format_bytes(meta.total_size));
         let start = Instant::now();
 
         let pb = if args.no_progress || meta.total_size == 0 {
@@ -124,31 +158,39 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
         return Ok(());
     }
 
+    // ── Direct listener mode ─────────────────────────────────────────
     let bind_addr = SocketAddr::new(args.bind, args.port);
     let endpoint = network::bind_server(bind_addr).await?;
     let local_port = endpoint.local_addr()?.port();
     if bind_addr.ip().is_unspecified() {
         let ips = local_addr::local_ipv4s();
         if ips.is_empty() {
-            output::info(&format!(
-                "Listening on 127.0.0.1:{local_port} (QUIC / io_uring)"
-            ));
+            output::print_listener_active(format!("127.0.0.1:{local_port}"));
         } else {
             for ip in ips {
-                output::info(&format!("Listening on {ip}:{local_port} (QUIC / io_uring)"));
+                output::print_listener_active(format!("{ip}:{local_port}"));
             }
         }
     } else {
-        output::info(&format!(
-            "Listening on {} (QUIC / io_uring)",
-            endpoint.local_addr()?
-        ));
+        output::print_listener_active(endpoint.local_addr()?);
     }
-    output::info("Waiting for incoming connection...");
+
+    let spinner = if args.no_progress {
+        None
+    } else {
+        let s = output::spinner("Waiting");
+        s.set_message("for incoming connection…");
+        Some(s)
+    };
 
     loop {
         let incoming = match endpoint.wait_incoming().await {
-            Some(i) => i,
+            Some(i) => {
+                if let Some(s) = &spinner {
+                    s.finish_and_clear();
+                }
+                i
+            }
             None => break,
         };
         let conn = match incoming.await {
@@ -169,6 +211,7 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
             }
         };
 
+        output::stage("handshake", "negotiating cipher…");
         let ((key, cipher_id), meta) = match transfer::handshake_receiver_split(
             &mut send_stream,
             &mut recv_stream,
@@ -182,8 +225,21 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
                 continue;
             }
         };
-        output::key_value("cipher", output::cipher_name(cipher_id));
-        output::key_value("hash", &meta.hash_algo);
+
+        // ── Transfer offer card ──────────────────────────────────────
+        let kind = if meta.transfer_type == TRANSFER_DIR {
+            "directory"
+        } else {
+            "file"
+        };
+        output::print_transfer_offer(
+            &meta.filename,
+            meta.total_size,
+            kind,
+            peer,
+            output::cipher_name(cipher_id),
+            &meta.hash_algo,
+        );
 
         let dest = if args.auto_accept {
             Some(resolve_output(&args.output, &meta)?)
@@ -205,7 +261,6 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
 
         output::stage("receive", &meta.filename);
         output::key_value("output", dest.display());
-        output::key_value("size", output::format_bytes(meta.total_size));
         let start = Instant::now();
 
         let pb = if args.no_progress || meta.total_size == 0 {
@@ -276,7 +331,11 @@ fn prompt_accept(
         "file"
     };
 
-    let prompt = format!("Incoming {kind} \"{}\" from {peer}. Accept?", meta.filename);
+    let prompt = format!(
+        "   Accept {kind} \"{}\" ({}) from {peer}?",
+        meta.filename,
+        output::format_bytes(meta.total_size)
+    );
 
     if dialoguer::Confirm::new()
         .with_prompt(prompt)
@@ -284,7 +343,7 @@ fn prompt_accept(
         .interact()?
     {
         let dest_dir: String = dialoguer::Input::new()
-            .with_prompt("   Destination directory")
+            .with_prompt("   Save to directory")
             .default(default_dir.to_string_lossy().into_owned())
             .interact_text()?;
 

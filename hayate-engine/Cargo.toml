@@ -58,6 +58,9 @@ rapidhash = { workspace = true }
 [dev-dependencies]
 compio = { workspace = true }
 divan = { version = "4.7.0", package = "codspeed-divan-compat" }
+blake3 = { workspace = true }
+rapidhash = { workspace = true }
+sha2 = { workspace = true }
 
 [[bench]]
 name = "crypto"
@@ -66,5 +69,10 @@ required-features = ["benchmarks"]
 
 [[bench]]
 name = "protocol"
+harness = false
+required-features = ["benchmarks"]
+
+[[bench]]
+name = "hashing"
 harness = false
 required-features = ["benchmarks"]

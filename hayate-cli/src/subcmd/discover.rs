@@ -6,6 +6,7 @@
 
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
+    sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 
@@ -29,7 +30,7 @@ pub async fn run(args: DiscoverArgs) -> Result<()> {
         output::warn("No local subnets detected. Loopback only. Use --cidr to specify a subnet.");
     } else {
         output::info(&format!(
-            "Scanning {} subnet(s) for {}s...",
+            "Scanning {} subnet(s) with {}s timeout",
             subnets.len(),
             args.timeout
         ));
@@ -56,10 +57,23 @@ pub async fn run(args: DiscoverArgs) -> Result<()> {
         DEFAULT_PORT,
     ));
 
+    let total_targets = targets.len() as u64;
+    let pb = output::scan_progress_bar(total_targets);
+    let found_count = AtomicU64::new(0);
+
     let peers: Vec<(String, SocketAddr, String)> = stream::iter(targets)
-        .map(|addr| async move {
-            let res = probe_one(addr, timeout).await;
-            (addr, res)
+        .map(|addr| {
+            let pb_ref = &pb;
+            let found_ref = &found_count;
+            async move {
+                let res = probe_one(addr, timeout).await;
+                pb_ref.inc(1);
+                if res.is_some() {
+                    let n = found_ref.fetch_add(1, Ordering::Relaxed) + 1;
+                    pb_ref.set_message(format!("{n} peer(s) found"));
+                }
+                (addr, res)
+            }
         })
         .buffer_unordered(CONCURRENCY)
         .filter_map(|(addr, res)| async move {
@@ -74,6 +88,8 @@ pub async fn run(args: DiscoverArgs) -> Result<()> {
         })
         .collect()
         .await;
+
+    pb.finish_and_clear();
 
     let mut unique_addrs = std::collections::HashSet::new();
     let mut deduplicated_peers = Vec::new();

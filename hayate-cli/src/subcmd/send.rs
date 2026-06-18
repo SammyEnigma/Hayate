@@ -33,6 +33,7 @@ pub async fn run(args: SendArgs) -> Result<()> {
         (String::new(), false)
     };
 
+    // ── Stage 1: Connect ─────────────────────────────────────────────
     let (conn, passphrase) = if let Some(target_str) = target {
         let target_addr = target_str
             .to_socket_addrs()
@@ -83,7 +84,7 @@ pub async fn run(args: SendArgs) -> Result<()> {
             None
         } else {
             let spinner = output::spinner("Pairing");
-            spinner.set_message("waiting for receiver");
+            spinner.set_message("waiting for receiver…");
             Some(spinner)
         };
         let incoming = endpoint
@@ -114,15 +115,11 @@ pub async fn run(args: SendArgs) -> Result<()> {
 
     let (mut send_stream, mut recv_stream) = conn.open_bi()?;
 
+    // ── Stage 2: Prepare ─────────────────────────────────────────────
     let (meta, total_size) = build_metadata(path, args.hash.clone())?;
-    output::stage("prepare", &meta.filename);
-    output::key_value("size", output::format_bytes(total_size));
-    output::key_value(
-        "compress",
-        if args.compress { "zstd level 1" } else { "off" },
-    );
-    output::key_value("hash", &args.hash);
 
+    // ── Stage 3: Handshake ───────────────────────────────────────────
+    output::stage("handshake", "negotiating cipher…");
     let (key, cipher_id) = transfer::handshake_sender_split(
         &mut send_stream,
         &mut recv_stream,
@@ -130,8 +127,34 @@ pub async fn run(args: SendArgs) -> Result<()> {
         passphrase.as_deref(),
     )
     .await?;
-    output::key_value("cipher", output::cipher_name(cipher_id));
 
+    // ── Show transfer info card ──────────────────────────────────────
+    let kind = if meta.transfer_type == TRANSFER_DIR {
+        "directory"
+    } else {
+        "file"
+    };
+    output::print_info_card(
+        "Sending",
+        &[
+            ("file", meta.filename.clone()),
+            ("type", kind.to_owned()),
+            ("size", output::format_bytes(total_size)),
+            (
+                "compress",
+                if args.compress {
+                    "zstd level 1".to_owned()
+                } else {
+                    "off".to_owned()
+                },
+            ),
+            ("hash", args.hash.clone()),
+            ("cipher", output::cipher_name(cipher_id).to_owned()),
+            ("peer", conn.remote_address().to_string()),
+        ],
+    );
+
+    // ── Stage 4: Transfer ────────────────────────────────────────────
     let pb = if args.no_progress || total_size == 0 {
         None
     } else {
@@ -183,6 +206,7 @@ pub async fn run(args: SendArgs) -> Result<()> {
         output::finish_transfer_progress(pb, total_size);
     }
 
+    // ── Stage 5: Summary ─────────────────────────────────────────────
     let elapsed = start.elapsed().as_secs_f64();
     output::print_transfer_summary(
         &meta.filename,

@@ -89,31 +89,32 @@ let (_checksum, _path) = HayateReceiver::new()
 # }
 ```
 
-*Note: Android devices and VPNs often block broadcasts. Fallback to direct IP mode when necessary.*
+_Note: Android devices and VPNs often block broadcasts. Fallback to direct IP mode when necessary._
 
 ## 🗺️ Module Architecture
 
-| Module | Purpose |
-| --- | --- |
-| `runner` | Builder-style APIs: `HayateSender` and `HayateReceiver`. |
-| `transfer` | Pipeline orchestration: handshake, consent, multithreaded receive/send pool. |
-| `protocol` | Wire constants, frame flags, metadata structure, and limits. |
-| `crypto` | Ephemeral X25519, HKDF, AEAD wrappers, and cipher selection. |
-| `network` | QUIC bindings and ephemeral `rustls` configurations. |
-| `discovery` | Pairing-code UDP broadcast and listener logic. |
-| `tar` | Streaming directory packing and extraction. |
-| `local_addr` | Network interface and subnet utilities. |
-| `error` | Defines `EngineError`. |
+| Module       | Purpose                                                                      |
+| ------------ | ---------------------------------------------------------------------------- |
+| `runner`     | Builder-style APIs: `HayateSender` and `HayateReceiver`.                     |
+| `transfer`   | Pipeline orchestration: handshake, consent, multithreaded receive/send pool. |
+| `protocol`   | Wire constants, frame flags, metadata structure, and limits.                 |
+| `crypto`     | Ephemeral X25519, HKDF, AEAD wrappers, and cipher selection.                 |
+| `network`    | QUIC bindings and ephemeral `rustls` configurations.                         |
+| `discovery`  | Pairing-code UDP broadcast and listener logic.                               |
+| `tar`        | Streaming directory packing and extraction.                                  |
+| `local_addr` | Network interface and subnet utilities.                                      |
+| `error`      | Defines `EngineError`.                                                       |
 
 ## ⚙️ Runtime Notes
 
-`compio` uses completion-based I/O. Buffers must be *owned* and passed by value to I/O operations (returning via `compio::BufResult`). 
+`compio` uses completion-based I/O. Buffers must be _owned_ and passed by value to I/O operations (returning via `compio::BufResult`).
 
 Hayate isolates blocking logic (`tar` extraction) and heavy CPU tasks (`zstd` / AEAD) off the executor using dedicated worker threads (`std::thread::spawn`) and `flume` channels. A `BTreeMap` handles chunk reordering on the receiver to guarantee sequential disk writes.
 
 ## 🛡️ Safety Guarantees
 
 Hayate treats network data as fundamentally hostile:
+
 - **Encrypted Metadata:** Filename, size, and hashing choices are authenticated before prompting the user.
 - **Strict Framing:** Frames are length-capped and verified via AEAD before decompression.
 - **Size Verification:** Completed file sizes must match the exact announced byte count.

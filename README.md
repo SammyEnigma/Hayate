@@ -31,6 +31,7 @@ Hayate is a **blazing-fast, completion-based CLI** for secure file and directory
 ## 🚦 Quick Start
 
 ### 🤝 Pairing Mode (No IP Required)
+
 Share a phrase to let Hayate auto-discover the peer over the LAN.
 
 ```bash
@@ -42,6 +43,7 @@ hayate send ./photos.zip --code "apple-bravo-charlie"
 ```
 
 ### 🎯 Direct Mode
+
 Connect directly via IP and Port. Best for restrictive networks, VPNs, or Termux (Android).
 
 ```bash
@@ -55,6 +57,7 @@ hayate send ./archive.tar 192.168.1.50:50001
 ## 🛠️ Commands
 
 ### `hayate receive`
+
 Waits for an incoming transfer. Features interactive `[y/N]` confirmation and destination selection.
 
 ```text
@@ -68,6 +71,7 @@ Options:
 ```
 
 ### `hayate send`
+
 Transfers a file or directory.
 
 ```text
@@ -82,6 +86,7 @@ Options:
 ```
 
 ### `hayate discover`
+
 Scan the subnet for active Hayate receivers.
 
 ```text
@@ -100,7 +105,7 @@ Hayate uses QUIC TLS 1.3 for transport encryption via ephemeral self-signed cert
 4. **Payload:** Chunks are length-capped and authenticated via AEAD before decompression or writing.
 5. **Path Safety:** Directory extraction rejects absolute paths, `..`, symlinks, and hard links.
 
-*Direct mode without a code relies solely on network locality. For untrusted environments, always use a `--code` phrase.*
+_Direct mode without a code relies solely on network locality. For untrusted environments, always use a `--code` phrase._
 
 ## 📱 Termux & Mobile
 
@@ -117,11 +122,13 @@ hayate send ./document.pdf 192.168.1.13:50002
 ## 📥 Installation
 
 **macOS, Linux, and Termux:**
+
 ```bash
 curl -sSf https://raw.githubusercontent.com/ShiinaSaku/Hayate/refs/heads/master/scripts/install.sh | bash
 ```
 
 **Windows PowerShell:**
+
 ```powershell
 irm https://raw.githubusercontent.com/ShiinaSaku/Hayate/refs/heads/master/scripts/install.ps1 | iex
 ```
@@ -138,7 +145,8 @@ cd Hayate
 cargo build --release -p hayate-cli
 ```
 
-*(Optional)* `just` runner workflows:
+_(Optional)_ `just` runner workflows:
+
 ```bash
 just check
 just build

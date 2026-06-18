@@ -18,6 +18,30 @@ fn main() {
     println!("cargo:rustc-env=GIT_COMMIT_HASH={}", commit);
     println!("cargo:rerun-if-changed=.git/HEAD");
 
+    let version = Command::new("git")
+        .args(["describe", "--tags", "--always"])
+        .output()
+        .ok()
+        .and_then(|output| {
+            if output.status.success() {
+                String::from_utf8(output.stdout).ok()
+            } else {
+                None
+            }
+        })
+        .map(|s| {
+            let mut val = s.trim().to_string();
+            if val.starts_with('v') {
+                val.remove(0);
+            }
+            val
+        })
+        .unwrap_or_else(|| {
+            std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "unknown".to_string())
+        });
+
+    println!("cargo:rustc-env=GIT_VERSION={}", version);
+
     let ref_path = Command::new("git")
         .args(["symbolic-ref", "HEAD"])
         .output()
