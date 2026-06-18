@@ -131,19 +131,9 @@ jobs:
         with:
           subject-path: "target/artifacts/*"
 
-      - name: Generate Changelog
-        uses: orhun/git-cliff-action@v4
-        id: git-cliff
-        with:
-          config: cliff.toml
-          args: --latest --strip header
-        env:
-          OUTPUT: RELEASE_NOTES.md
-          GITHUB_REPO: ${{ github.repository }}
-
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v3
+      - name: Upload Binaries to Release
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-          body_path: RELEASE_NOTES.md
           files: target/artifacts/*
+          fail_on_unmatched_files: true
