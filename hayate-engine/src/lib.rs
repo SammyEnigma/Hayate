@@ -10,6 +10,7 @@
 //! * Completion-based async I/O through `compio`.
 //! * Ephemeral X25519 key agreement.
 //! * HKDF-SHA256 key derivation.
+//! * Blake3, RapidHash, or SHA256 payload integrity.
 //! * ChaCha20-Poly1305 or AES-256-GCM frame encryption.
 //! * Optional zstd compression.
 //! * Safe tar streaming for directory payloads.
@@ -38,7 +39,7 @@
 //!     println!("sent {bytes_sent} bytes");
 //! }).await?;
 //!
-//! println!("sha256 {checksum}");
+//! println!("checksum {checksum}");
 //! # Ok(())
 //! # }
 //! ```
@@ -65,7 +66,7 @@
 //! ).await?;
 //!
 //! println!("saved to {}", path.display());
-//! println!("sha256 {checksum}");
+//! println!("checksum {checksum}");
 //! # Ok(())
 //! # }
 //! ```
@@ -118,8 +119,8 @@
 //!
 //! A transfer establishes QUIC, opens a bidirectional stream, negotiates protocol
 //! version and cipher capability, performs X25519 key agreement, derives a
-//! 32-byte AEAD key, encrypts metadata, sends receiver consent, and then streams
-//! length-prefixed encrypted payload frames. File transfers must finish with the
+//! 32-byte AEAD key, encrypts metadata (including chosen hash algorithm),
+//! sends receiver consent, and then streams length-prefixed encrypted payload frames. File transfers must finish with the
 //! exact announced byte count; directory transfers are tar streams with
 //! containment checks during extraction.
 //!

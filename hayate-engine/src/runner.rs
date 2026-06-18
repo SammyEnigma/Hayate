@@ -35,15 +35,27 @@ use crate::{
 /// let checksum = sender.send("path/to/file.txt", |progress| {
 ///     println!("Sent {progress} bytes");
 /// }).await?;
-/// println!("Transfer complete. SHA-256: {checksum}");
+/// println!("Transfer complete. Checksum: {checksum}");
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct HayateSender {
     target: Option<SocketAddr>,
     code: Option<String>,
     compress: bool,
+    hash_algo: String,
+}
+
+impl Default for HayateSender {
+    fn default() -> Self {
+        Self {
+            target: None,
+            code: None,
+            compress: true,
+            hash_algo: "blake3".to_owned(),
+        }
+    }
 }
 
 impl HayateSender {
@@ -81,12 +93,19 @@ impl HayateSender {
         self
     }
 
+    /// Sets the hash algorithm for payload integrity (default is "blake3").
+    #[must_use]
+    pub fn hash_algo(mut self, algo: String) -> Self {
+        self.hash_algo = algo;
+        self
+    }
+
     /// Initiates the transfer of the file or directory at `path`.
     ///
     /// The `progress_cb` closure is periodically called with the total number of bytes
     /// written to the network.
     ///
-    /// Returns the SHA-256 checksum of the transferred payload.
+    /// Returns the checksum of the transferred payload.
     ///
     /// # Errors
     ///
@@ -105,7 +124,7 @@ impl HayateSender {
             )));
         }
 
-        let (meta, _) = Self::build_metadata(path)?;
+        let (meta, _) = self.build_metadata(path)?;
 
         // Establish the QUIC connection
         let conn = if let Some(target_addr) = self.target {
@@ -157,11 +176,25 @@ impl HayateSender {
 
         // Send payload based on file or directory type
         let checksum = if path.is_dir() {
-            self.send_directory(path, &key, cipher_id, &mut send_stream, progress_cb)
-                .await?
+            self.send_directory(
+                path,
+                &key,
+                cipher_id,
+                &self.hash_algo,
+                &mut send_stream,
+                progress_cb,
+            )
+            .await?
         } else {
-            self.send_file(path, &key, cipher_id, &mut send_stream, progress_cb)
-                .await?
+            self.send_file(
+                path,
+                &key,
+                cipher_id,
+                &self.hash_algo,
+                &mut send_stream,
+                progress_cb,
+            )
+            .await?
         };
 
         send_stream
@@ -177,7 +210,7 @@ impl HayateSender {
         Ok(checksum)
     }
 
-    fn build_metadata(path: &Path) -> Result<(Metadata, u64), EngineError> {
+    fn build_metadata(&self, path: &Path) -> Result<(Metadata, u64), EngineError> {
         let filename = path
             .file_name()
             .ok_or_else(|| {
@@ -196,6 +229,7 @@ impl HayateSender {
                     filename,
                     total_size: total,
                     transfer_type: TRANSFER_DIR,
+                    hash_algo: self.hash_algo.clone(),
                 },
                 total,
             ))
@@ -206,6 +240,7 @@ impl HayateSender {
                     filename,
                     total_size: total,
                     transfer_type: TRANSFER_FILE,
+                    hash_algo: self.hash_algo.clone(),
                 },
                 total,
             ))
@@ -217,6 +252,7 @@ impl HayateSender {
         path: &Path,
         key: &[u8; 32],
         cipher_id: u8,
+        hash_algo: &str,
         stream: &mut compio_quic::SendStream,
         progress_cb: impl FnMut(u64) + Send + 'static,
     ) -> Result<String, EngineError> {
@@ -232,6 +268,7 @@ impl HayateSender {
             stream,
             self.compress,
             filename,
+            hash_algo,
             progress_cb,
         )
         .await
@@ -242,6 +279,7 @@ impl HayateSender {
         dir: &Path,
         key: &[u8; 32],
         cipher_id: u8,
+        hash_algo: &str,
         stream: &mut compio_quic::SendStream,
         progress_cb: impl FnMut(u64) + Send + 'static,
     ) -> Result<String, EngineError> {
@@ -277,6 +315,7 @@ impl HayateSender {
             stream,
             self.compress,
             None,
+            hash_algo,
             progress_cb,
         )
         .await
@@ -305,7 +344,7 @@ impl HayateSender {
 ///     println!("Received {progress} bytes");
 /// }).await?;
 ///
-/// println!("Successfully saved to {} (SHA-256: {})", path.display(), checksum);
+/// println!("Successfully saved to {} (Checksum: {})", path.display(), checksum);
 /// # Ok(())
 /// # }
 /// ```
@@ -365,7 +404,7 @@ impl HayateReceiver {
     /// The `progress_cb` closure is periodically called with the total number of bytes
     /// received from the network.
     ///
-    /// Returns a tuple containing the SHA-256 checksum of the payload and the actual path
+    /// Returns a tuple containing the checksum of the payload and the actual path
     /// where it was written.
     ///
     /// # Errors
@@ -444,6 +483,7 @@ impl HayateReceiver {
             &dest,
             meta.transfer_type,
             meta.total_size,
+            &meta.hash_algo,
             progress_cb,
         )
         .await?;

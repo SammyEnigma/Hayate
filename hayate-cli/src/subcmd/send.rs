@@ -114,13 +114,14 @@ pub async fn run(args: SendArgs) -> Result<()> {
 
     let (mut send_stream, mut recv_stream) = conn.open_bi()?;
 
-    let (meta, total_size) = build_metadata(path)?;
+    let (meta, total_size) = build_metadata(path, args.hash.clone())?;
     output::stage("prepare", &meta.filename);
     output::key_value("size", output::format_bytes(total_size));
     output::key_value(
         "compress",
         if args.compress { "zstd level 1" } else { "off" },
     );
+    output::key_value("hash", &args.hash);
 
     let (key, cipher_id) = transfer::handshake_sender_split(
         &mut send_stream,
@@ -145,6 +146,7 @@ pub async fn run(args: SendArgs) -> Result<()> {
             path,
             &key,
             cipher_id,
+            &args.hash,
             &mut send_stream,
             args.compress,
             |b| {
@@ -159,6 +161,7 @@ pub async fn run(args: SendArgs) -> Result<()> {
             path,
             &key,
             cipher_id,
+            &args.hash,
             &mut send_stream,
             args.compress,
             |b| {
@@ -197,7 +200,7 @@ pub async fn run(args: SendArgs) -> Result<()> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn build_metadata(path: &Path) -> Result<(Metadata, u64)> {
+fn build_metadata(path: &Path, hash: String) -> Result<(Metadata, u64)> {
     let filename = path
         .file_name()
         .context("path has no filename")?
@@ -211,6 +214,7 @@ fn build_metadata(path: &Path) -> Result<(Metadata, u64)> {
                 filename,
                 total_size: total,
                 transfer_type: TRANSFER_DIR,
+                hash_algo: hash,
             },
             total,
         ))
@@ -221,6 +225,7 @@ fn build_metadata(path: &Path) -> Result<(Metadata, u64)> {
                 filename,
                 total_size: total,
                 transfer_type: TRANSFER_FILE,
+                hash_algo: hash,
             },
             total,
         ))
@@ -231,6 +236,7 @@ async fn send_file(
     path: &Path,
     key: &[u8; 32],
     cipher_id: u8,
+    hash_algo: &str,
     stream: &mut compio_quic::SendStream,
     compress: bool,
     progress_cb: impl FnMut(u64),
@@ -245,6 +251,7 @@ async fn send_file(
         stream,
         compress,
         filename,
+        hash_algo,
         progress_cb,
     )
     .await?)
@@ -254,6 +261,7 @@ async fn send_directory(
     dir: &Path,
     key: &[u8; 32],
     cipher_id: u8,
+    hash_algo: &str,
     stream: &mut compio_quic::SendStream,
     compress: bool,
     progress_cb: impl FnMut(u64),
@@ -283,8 +291,15 @@ async fn send_directory(
     });
 
     let source = hayate::transfer::PayloadSource::Channel(rx);
-    Ok(
-        transfer::send_payload_write(key, cipher_id, source, stream, compress, None, progress_cb)
-            .await?,
+    Ok(transfer::send_payload_write(
+        key,
+        cipher_id,
+        source,
+        stream,
+        compress,
+        None,
+        hash_algo,
+        progress_cb,
     )
+    .await?)
 }

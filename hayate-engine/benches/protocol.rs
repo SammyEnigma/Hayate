@@ -16,6 +16,7 @@ fn sample_metadata() -> Metadata {
         filename: "2026-projects-archive.tar.zst".to_owned(),
         total_size: 1 << 30,
         transfer_type: TRANSFER_FILE,
+        hash_algo: "blake3".to_owned(),
     }
 }
 

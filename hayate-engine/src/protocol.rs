@@ -23,12 +23,14 @@
 //! | M | UTF-8 filename |
 //! | 8 | File size, or `0` for directory streams |
 //! | 1 | Transfer type: [`TRANSFER_FILE`] or [`TRANSFER_DIR`] |
+//! | 1 | Hash algorithm name length |
+//! | H | Hash algorithm name |
 //!
 //! Decrypted payload frames begin with one flag byte: [`FRAME_RAW`] for
 //! uncompressed payloads, [`FRAME_ZSTD`] for zstd-compressed payloads.
 
 /// Current binary wire protocol version.
-pub const PROTOCOL_VERSION: u16 = 4;
+pub const PROTOCOL_VERSION: u16 = 5;
 
 /// Metadata transfer type for a single file.
 pub const TRANSFER_FILE: u8 = 0x00;
@@ -48,7 +50,7 @@ pub const MAX_FILENAME_BYTES: usize = 4096;
 /// The cap includes the plaintext metadata fields plus nonce/tag overhead and
 /// a small margin, preventing malicious peers from forcing large allocations
 /// during the handshake.
-pub const MAX_METADATA_ENCRYPTED: usize = 4 + MAX_FILENAME_BYTES + 8 + 1 + 12 + 16 + 16;
+pub const MAX_METADATA_ENCRYPTED: usize = 4 + MAX_FILENAME_BYTES + 8 + 1 + 1 + 256 + 12 + 16 + 16;
 
 /// Chunk size for each data frame in bytes.
 ///
@@ -65,6 +67,8 @@ pub struct Metadata {
     pub total_size: u64,
     /// Transfer kind, either [`TRANSFER_FILE`] or [`TRANSFER_DIR`].
     pub transfer_type: u8,
+    /// Hash algorithm used for payload integrity (e.g., "blake3", "rapidhash").
+    pub hash_algo: String,
 }
 
 impl Metadata {
@@ -85,6 +89,12 @@ impl Metadata {
                 self.transfer_type
             )));
         }
+        let algo_len = self.hash_algo.len();
+        if algo_len == 0 || algo_len > 255 {
+            return Err(crate::EngineError::InvalidFrame(format!(
+                "invalid hash algorithm length: {algo_len}"
+            )));
+        }
         Ok(())
     }
 
@@ -94,17 +104,20 @@ impl Metadata {
     /// from the wire is validated by [`Self::decode`].
     pub fn encode(&self) -> Vec<u8> {
         let name_bytes = self.filename.as_bytes();
-        let mut buf = Vec::with_capacity(2 + name_bytes.len() + 8 + 1);
+        let algo_bytes = self.hash_algo.as_bytes();
+        let mut buf = Vec::with_capacity(2 + name_bytes.len() + 8 + 1 + 1 + algo_bytes.len());
         buf.extend_from_slice(&(name_bytes.len() as u16).to_be_bytes());
         buf.extend_from_slice(name_bytes);
         buf.extend_from_slice(&self.total_size.to_be_bytes());
         buf.push(self.transfer_type);
+        buf.push(algo_bytes.len() as u8);
+        buf.extend_from_slice(algo_bytes);
         buf
     }
 
     /// Deserialises from the plaintext metadata blob.
     pub fn decode(raw: &[u8]) -> Result<Self, crate::EngineError> {
-        if raw.len() < 11 {
+        if raw.len() < 12 {
             return Err(crate::EngineError::InvalidFrame(
                 "metadata too short".into(),
             ));
@@ -115,9 +128,9 @@ impl Metadata {
                 "invalid filename length: {name_len}"
             )));
         }
-        if raw.len() < 2 + name_len + 8 + 1 {
+        if raw.len() < 2 + name_len + 8 + 1 + 1 {
             return Err(crate::EngineError::InvalidFrame(
-                "metadata truncated".into(),
+                "metadata truncated before hash algorithm".into(),
             ));
         }
         let filename = std::str::from_utf8(&raw[2..2 + name_len])
@@ -129,15 +142,21 @@ impl Metadata {
                 .expect("slice len == 8"),
         );
         let transfer_type = raw[2 + name_len + 8];
-        if transfer_type != TRANSFER_FILE && transfer_type != TRANSFER_DIR {
-            return Err(crate::EngineError::InvalidFrame(format!(
-                "invalid transfer type: 0x{transfer_type:02x}"
-            )));
+        let algo_len = raw[2 + name_len + 9] as usize;
+        if raw.len() < 2 + name_len + 10 + algo_len {
+            return Err(crate::EngineError::InvalidFrame(
+                "metadata truncated for hash algorithm name".into(),
+            ));
         }
+        let hash_algo = std::str::from_utf8(&raw[2 + name_len + 10..2 + name_len + 10 + algo_len])
+            .map_err(|_| crate::EngineError::InvalidFrame("hash algorithm not UTF-8".into()))?
+            .to_owned();
+
         Ok(Self {
             filename,
             total_size,
             transfer_type,
+            hash_algo,
         })
     }
 }
@@ -164,6 +183,7 @@ mod tests {
             filename: "name".to_owned(),
             total_size: 0,
             transfer_type: 0xff,
+            hash_algo: "blake3".to_owned(),
         };
 
         let err = meta.validate().unwrap_err();
@@ -176,6 +196,7 @@ mod tests {
             filename: String::new(),
             total_size: 0,
             transfer_type: TRANSFER_FILE,
+            hash_algo: "blake3".to_owned(),
         };
 
         let err = meta.validate().unwrap_err();

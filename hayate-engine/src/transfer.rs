@@ -9,7 +9,7 @@
 //! is the buffer returned after the kernel is done with it.
 
 use futures_util::stream::{FuturesOrdered, StreamExt};
-use std::{io, path::Path, sync::Arc};
+use std::{collections::BTreeMap, io, path::Path, sync::Arc};
 
 use compio::io::{AsyncReadAt, AsyncReadExt, AsyncWriteAtExt, AsyncWriteExt};
 
@@ -54,6 +54,48 @@ pub enum PayloadSink {
 // ---------------------------------------------------------------------------
 // Internal I/O helpers
 // ---------------------------------------------------------------------------
+
+/// Helper for dynamic payload hashing.
+enum PayloadHasher {
+    Blake3(Box<blake3::Hasher>),
+    RapidHash(rapidhash::v3::RapidStreamHasherV3<'static>),
+    Sha256(ring::digest::Context),
+}
+
+impl PayloadHasher {
+    fn new(algo: &str) -> Self {
+        match algo {
+            "rapidhash" => Self::RapidHash(rapidhash::v3::RapidStreamHasherV3::new(
+                &rapidhash::v3::DEFAULT_RAPID_SECRETS,
+            )),
+            "sha256" => Self::Sha256(ring::digest::Context::new(&ring::digest::SHA256)),
+            _ => Self::Blake3(Box::new(blake3::Hasher::new())),
+        }
+    }
+
+    fn update(&mut self, data: &[u8]) {
+        match self {
+            Self::Blake3(h) => {
+                h.update(data);
+            }
+            Self::RapidHash(h) => {
+                h.write(data);
+            }
+            Self::Sha256(h) => {
+                h.update(data);
+            }
+        }
+    }
+
+    fn finalize(self, algo: &str) -> String {
+        let hex_hash = match self {
+            Self::Blake3(h) => h.finalize().to_hex().to_string(),
+            Self::RapidHash(h) => format!("{:016x}", h.finish()),
+            Self::Sha256(h) => hex::encode(h.finish().as_ref()),
+        };
+        format!("{algo}${hex_hash}")
+    }
+}
 
 /// Read exactly `N` bytes from `stream` into a fresh `Vec<u8>`.
 async fn read_exact_n<S: AsyncReadExt + Unpin>(
@@ -400,7 +442,7 @@ where
 ///
 /// Returns [`EngineError`] if reading from source, compressing, encrypting, or writing
 /// to the network fails.
-#[allow(clippy::arc_with_non_send_sync)]
+#[allow(clippy::arc_with_non_send_sync, clippy::too_many_arguments)]
 pub async fn send_payload<S>(
     key: &[u8; 32],
     cipher_id: u8,
@@ -408,13 +450,12 @@ pub async fn send_payload<S>(
     stream: &mut S,
     compress: bool,
     filename: Option<&str>,
+    hash_algo: &str,
     mut progress_cb: impl FnMut(u64),
 ) -> Result<String, EngineError>
 where
     S: compio::io::AsyncWrite + Unpin,
 {
-    use ring::digest;
-
     // Compression is counterproductive for formats that are already entropy
     // coded; avoid burning CPU and expanding payloads for those extensions.
     let mut do_compress = compress;
@@ -446,9 +487,10 @@ where
     // Reader task: keep a small read-ahead queue so disk latency overlaps with
     // compression/encryption without allowing unbounded memory growth.
     let pool_clone = pool.clone();
+    let algo = hash_algo.to_owned();
     compio::runtime::spawn(async move {
         let mut index = 0;
-        let mut ctx = digest::Context::new(&digest::SHA256);
+        let mut hasher = PayloadHasher::new(&algo);
 
         match source {
             PayloadSource::File { file, pos } => {
@@ -484,7 +526,7 @@ where
                             if n < CHUNK_SIZE {
                                 file_ended = true;
                             }
-                            ctx.update(&buf[..n]);
+                            hasher.update(&buf[..n]);
 
                             if chunk_tx
                                 .send_async(Ok((index, buf, n, true)))
@@ -525,7 +567,7 @@ where
                             if data.is_empty() {
                                 break;
                             }
-                            ctx.update(&data);
+                            hasher.update(&data);
                             let len = data.len();
                             if chunk_tx
                                 .send_async(Ok((index, data, len, false)))
@@ -545,7 +587,7 @@ where
             }
         }
 
-        let hash = hex::encode(ctx.finish().as_ref());
+        let hash = hasher.finalize(&algo);
         let _ = hash_tx.send(hash);
     })
     .detach();
@@ -670,6 +712,7 @@ where
 ///
 /// Returns [`EngineError`] if reading from stream, decrypting, decompressing, writing to
 /// target file/directory, or size validation fails.
+#[allow(clippy::too_many_arguments)]
 pub async fn receive_payload<S>(
     key: &[u8; 32],
     cipher_id: u8,
@@ -677,6 +720,7 @@ pub async fn receive_payload<S>(
     output_path: &Path,
     transfer_type: u8,
     expected_size: u64,
+    hash_algo: &str,
     mut progress_cb: impl FnMut(u64) + 'static,
 ) -> Result<String, EngineError>
 where
@@ -737,102 +781,117 @@ where
         PayloadSink::Channel(tx)
     };
 
-    let (enc_tx, enc_rx) = flume::bounded::<Result<Vec<u8>, io::Error>>(16);
-    let (plain_tx, plain_rx) = flume::bounded::<Result<Vec<u8>, EngineError>>(16);
+    let (enc_tx, enc_rx) = flume::bounded::<Result<(usize, Vec<u8>), io::Error>>(16);
+    let (plain_tx, plain_rx) = flume::bounded::<Result<(usize, Vec<u8>), EngineError>>(16);
 
-    // Decrypt/decompress thread: reuse the expanded AEAD key and plaintext
-    // buffer across frames before handing ordered payload bytes to the writer.
-    let key = *key;
-    std::thread::spawn(move || {
-        let aead_key = match crypto::AeadKey::new(&key, cipher_id) {
-            Ok(key) => key,
-            Err(e) => {
-                let _ = plain_tx.send(Err(e));
-                return;
-            }
-        };
-        let mut decrypted_buf = Vec::with_capacity(CHUNK_SIZE + 256);
-        while let Ok(res) = enc_rx.recv() {
-            let enc = match res {
-                Ok(e) => e,
+    // Decrypt/decompress workers: isolate CPU-bound tasks in a worker pool.
+    let num_workers = std::thread::available_parallelism()
+        .map_or(4, std::num::NonZeroUsize::get)
+        .saturating_sub(1)
+        .max(2);
+
+    for _ in 0..num_workers {
+        let enc_rx = enc_rx.clone();
+        let plain_tx = plain_tx.clone();
+        let key = *key;
+        std::thread::spawn(move || {
+            let aead_key = match crypto::AeadKey::new(&key, cipher_id) {
+                Ok(key) => key,
                 Err(e) => {
-                    let _ = plain_tx.send(Err(EngineError::Io(e)));
-                    break;
+                    let _ = plain_tx.send(Err(e));
+                    return;
                 }
             };
-            match crypto::decrypt_frame_into_with_key(&aead_key, &enc, &mut decrypted_buf) {
-                Ok(()) => {
-                    if decrypted_buf.is_empty() {
-                        let _ = plain_tx.send(Err(EngineError::InvalidFrame(
-                            "empty decrypted frame".into(),
-                        )));
+            let mut decrypted_buf = Vec::with_capacity(CHUNK_SIZE + 256);
+            while let Ok(res) = enc_rx.recv() {
+                let (index, enc) = match res {
+                    Ok(e) => e,
+                    Err(e) => {
+                        let _ = plain_tx.send(Err(EngineError::Io(e)));
                         break;
                     }
-                    let flag = decrypted_buf[0];
-                    let data = &decrypted_buf[1..];
-                    let plaintext_res: Result<Vec<u8>, EngineError> = match flag {
-                        FRAME_RAW => Ok(data.to_vec()),
-                        FRAME_ZSTD => zstd::decode_all(data)
-                            .map_err(|e| EngineError::Compression(e.to_string())),
-                        other => Err(EngineError::InvalidFrame(format!(
-                            "unknown frame flag 0x{other:02x}"
-                        ))),
-                    };
-                    match plaintext_res {
-                        Ok(plain) => {
-                            if plain_tx.send(Ok(plain)).is_err() {
+                };
+                match crypto::decrypt_frame_into_with_key(&aead_key, &enc, &mut decrypted_buf) {
+                    Ok(()) => {
+                        if decrypted_buf.is_empty() {
+                            let _ = plain_tx.send(Err(EngineError::InvalidFrame(
+                                "empty decrypted frame".into(),
+                            )));
+                            break;
+                        }
+                        let flag = decrypted_buf[0];
+                        let data = &decrypted_buf[1..];
+                        let plaintext_res: Result<Vec<u8>, EngineError> = match flag {
+                            FRAME_RAW => Ok(data.to_vec()),
+                            FRAME_ZSTD => zstd::decode_all(data)
+                                .map_err(|e| EngineError::Compression(e.to_string())),
+                            other => Err(EngineError::InvalidFrame(format!(
+                                "unknown frame flag 0x{other:02x}"
+                            ))),
+                        };
+                        match plaintext_res {
+                            Ok(plain) => {
+                                if plain_tx.send(Ok((index, plain))).is_err() {
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                let _ = plain_tx.send(Err(e));
                                 break;
                             }
                         }
-                        Err(e) => {
-                            let _ = plain_tx.send(Err(e));
-                            break;
-                        }
+                    }
+                    Err(e) => {
+                        let _ = plain_tx.send(Err(e));
+                        break;
                     }
                 }
-                Err(e) => {
-                    let _ = plain_tx.send(Err(e));
-                    break;
-                }
             }
-        }
-    });
+        });
+    }
+    // Drop our handle so plain_rx completes when all workers exit
+    drop(plain_tx);
 
-    // Writer task: hash and persist plaintext after validation, keeping all
-    // filesystem writes on the completion-based I/O path.
+    // Writer task: reorder, hash, and persist plaintext after validation.
+    let algo = hash_algo.to_owned();
     let write_handle = compio::runtime::spawn(async move {
-        use ring::digest;
-        let mut ctx = digest::Context::new(&digest::SHA256);
+        let mut hasher = PayloadHasher::new(&algo);
         let mut total: u64 = 0;
         let mut pos: u64 = 0;
+        let mut next_index = 0;
+        let mut pending = BTreeMap::new();
 
         while let Ok(res) = plain_rx.recv_async().await {
-            let plaintext = res?;
-            ctx.update(&plaintext);
-            total += plaintext.len() as u64;
-            let plaintext_len = plaintext.len() as u64;
+            let (index, plaintext) = res?;
+            pending.insert(index, plaintext);
 
-            match &mut sink {
-                PayloadSink::File { file, pos: _ } => {
-                    let compio::BufResult(result, _) = file.write_all_at(plaintext, pos).await;
-                    result.map_err(EngineError::Io)?;
-                    pos += plaintext_len;
+            while let Some(plaintext) = pending.remove(&next_index) {
+                hasher.update(&plaintext);
+                total += plaintext.len() as u64;
+                let plaintext_len = plaintext.len() as u64;
+
+                match &mut sink {
+                    PayloadSink::File { file, pos: _ } => {
+                        let compio::BufResult(result, _) = file.write_all_at(plaintext, pos).await;
+                        result.map_err(EngineError::Io)?;
+                        pos += plaintext_len;
+                    }
+                    PayloadSink::Channel(tx) => {
+                        tx.send_async(plaintext).await.map_err(|_| {
+                            EngineError::Io(io::Error::new(
+                                io::ErrorKind::BrokenPipe,
+                                "extractor thread exited",
+                            ))
+                        })?;
+                    }
                 }
-                PayloadSink::Channel(tx) => {
-                    tx.send_async(plaintext).await.map_err(|_| {
-                        EngineError::Io(io::Error::new(
-                            io::ErrorKind::BrokenPipe,
-                            "extractor thread exited",
-                        ))
-                    })?;
-                }
+                progress_cb(total);
+                next_index += 1;
             }
-            progress_cb(total);
         }
 
         // Wait for extraction to finish if this is a directory transfer
         if let Some(handle) = extract_handle {
-            // Drop the channel sender so the extractor thread sees EOF
             if let PayloadSink::Channel(tx) = sink {
                 drop(tx);
             }
@@ -876,14 +935,12 @@ where
             }
         }
 
-        let hash = hex::encode(ctx.finish().as_ref());
-        Ok::<_, EngineError>(hash)
+        Ok::<_, EngineError>(hasher.finalize(&algo))
     });
 
-    // Network reader loop: each frame is length-prefixed. A clean EOF means
-    // the peer finished sending; any other read failure is forwarded to the
-    // decrypt thread so the writer task can return a structured error.
+    // Network reader loop: each frame is length-prefixed.
     let mut read_error = None;
+    let mut current_index = 0;
     loop {
         let len_buf_owned = vec![0u8; 4];
         let compio::BufResult(result, len_buf) = stream.read_exact(len_buf_owned).await;
@@ -898,8 +955,6 @@ where
         let frame_len =
             u32::from_be_bytes([len_buf[0], len_buf[1], len_buf[2], len_buf[3]]) as usize;
 
-        // Allow frames up to 16 MB to ensure backward compatibility with older transfer
-        // versions that utilized 4 MB chunks.
         if frame_len == 0 || frame_len > (16 * 1024 * 1024) {
             read_error = Some(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -912,9 +967,10 @@ where
         let compio::BufResult(result, enc) = stream.read_exact(enc_owned).await;
         match result {
             Ok(()) => {
-                if enc_tx.send_async(Ok(enc)).await.is_err() {
+                if enc_tx.send_async(Ok((current_index, enc))).await.is_err() {
                     break;
                 }
+                current_index += 1;
             }
             Err(e) => {
                 read_error = Some(e);
@@ -927,8 +983,6 @@ where
         let _ = enc_tx.send_async(Err(e)).await;
     }
 
-    // Closing the encrypted-frame channel lets worker threads observe EOF and
-    // drains the receive pipeline.
     drop(enc_tx);
 
     let hash = write_handle.await.map_err(|e| {
@@ -948,6 +1002,7 @@ where
 /// # Errors
 ///
 /// Returns [`EngineError`] if sending fails.
+#[allow(clippy::too_many_arguments)]
 pub async fn send_payload_write(
     key: &[u8; 32],
     cipher_id: u8,
@@ -955,6 +1010,7 @@ pub async fn send_payload_write(
     stream: &mut compio_quic::SendStream,
     compress: bool,
     filename: Option<&str>,
+    hash_algo: &str,
     progress_cb: impl FnMut(u64),
 ) -> Result<String, EngineError> {
     send_payload(
@@ -964,6 +1020,7 @@ pub async fn send_payload_write(
         stream,
         compress,
         filename,
+        hash_algo,
         progress_cb,
     )
     .await
@@ -974,6 +1031,7 @@ pub async fn send_payload_write(
 /// # Errors
 ///
 /// Returns [`EngineError`] if receiving fails.
+#[allow(clippy::too_many_arguments)]
 pub async fn receive_payload_split(
     key: &[u8; 32],
     cipher_id: u8,
@@ -981,6 +1039,7 @@ pub async fn receive_payload_split(
     output_path: &Path,
     transfer_type: u8,
     expected_size: u64,
+    hash_algo: &str,
     progress_cb: impl FnMut(u64) + 'static,
 ) -> Result<String, EngineError> {
     receive_payload(
@@ -990,6 +1049,7 @@ pub async fn receive_payload_split(
         output_path,
         transfer_type,
         expected_size,
+        hash_algo,
         progress_cb,
     )
     .await

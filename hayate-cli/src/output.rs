@@ -194,7 +194,7 @@ pub fn print_transfer_summary(
     );
     key_value("cipher", cipher);
     key_value("compress", if compressed { "zstd" } else { "off" });
-    key_value("sha256", checksum);
+    key_value("checksum", checksum);
     println!();
 }
 

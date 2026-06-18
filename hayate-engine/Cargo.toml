@@ -52,6 +52,8 @@ zstd = { workspace = true }
 anyhow = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
+blake3 = { workspace = true }
+rapidhash = { workspace = true }
 
 [dev-dependencies]
 compio = { workspace = true }

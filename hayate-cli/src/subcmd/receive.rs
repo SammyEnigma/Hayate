@@ -1,7 +1,6 @@
 //! `hayate receive` subcommand.
 
 use std::{
-    io::{self, Write},
     net::SocketAddr,
     path::PathBuf,
     time::{Duration, Instant},
@@ -60,22 +59,24 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
         )
         .await?;
         output::key_value("cipher", output::cipher_name(cipher_id));
+        output::key_value("hash", &meta.hash_algo);
 
-        let accept = if args.auto_accept {
-            true
+        let dest = if args.auto_accept {
+            Some(resolve_output(&args.output, &meta)?)
         } else {
-            prompt_accept(&meta, peer)?
+            prompt_accept(&meta, peer, &args.output)?
         };
 
+        let accept = dest.is_some();
         transfer::send_consent_write(&mut send_stream, accept).await?;
         if !accept {
             output::warn("Transfer rejected.");
             conn.close(0u32.into(), b"rejected");
             return Ok(());
         }
+        let dest = dest.unwrap();
 
         output::stage("receive", &meta.filename);
-        let dest = resolve_output(&args.output, &meta)?;
         output::key_value("output", dest.display());
         output::key_value("size", output::format_bytes(meta.total_size));
         let start = Instant::now();
@@ -95,6 +96,7 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
             &dest,
             meta.transfer_type,
             meta.total_size,
+            &meta.hash_algo,
             move |bytes| {
                 if let Some(pb) = &pb_clone {
                     output::set_transfer_position(pb, bytes);
@@ -180,13 +182,16 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
                 continue;
             }
         };
+        output::key_value("cipher", output::cipher_name(cipher_id));
+        output::key_value("hash", &meta.hash_algo);
 
-        let accept = if args.auto_accept {
-            true
+        let dest = if args.auto_accept {
+            Some(resolve_output(&args.output, &meta)?)
         } else {
-            prompt_accept(&meta, peer)?
+            prompt_accept(&meta, peer, &args.output)?
         };
 
+        let accept = dest.is_some();
         if let Err(e) = transfer::send_consent_write(&mut send_stream, accept).await {
             output::err(&format!("Failed to send transfer consent: {e}"));
             continue;
@@ -196,9 +201,9 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
             conn.close(0u32.into(), b"rejected");
             continue;
         }
+        let dest = dest.unwrap();
 
         output::stage("receive", &meta.filename);
-        let dest = resolve_output(&args.output, &meta)?;
         output::key_value("output", dest.display());
         output::key_value("size", output::format_bytes(meta.total_size));
         let start = Instant::now();
@@ -218,6 +223,7 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
             &dest,
             meta.transfer_type,
             meta.total_size,
+            &meta.hash_algo,
             move |bytes| {
                 if let Some(pb) = &pb_clone {
                     output::set_transfer_position(pb, bytes);
@@ -259,21 +265,37 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn prompt_accept(meta: &Metadata, peer: SocketAddr) -> Result<bool> {
+fn prompt_accept(
+    meta: &Metadata,
+    peer: SocketAddr,
+    default_dir: &std::path::Path,
+) -> Result<Option<PathBuf>> {
     let kind = if meta.transfer_type == TRANSFER_DIR {
         "directory"
     } else {
         "file"
     };
-    output::info(&format!(
-        "Incoming {kind}: \"{}\" from {peer}",
-        meta.filename
-    ));
-    print!("   Accept? [y/N]: ");
-    io::stdout().flush()?;
-    let mut line = String::new();
-    io::stdin().read_line(&mut line)?;
-    Ok(matches!(line.trim().to_lowercase().as_str(), "y" | "yes"))
+
+    let prompt = format!("Incoming {kind} \"{}\" from {peer}. Accept?", meta.filename);
+
+    if dialoguer::Confirm::new()
+        .with_prompt(prompt)
+        .default(false)
+        .interact()?
+    {
+        let dest_dir: String = dialoguer::Input::new()
+            .with_prompt("   Destination directory")
+            .default(default_dir.to_string_lossy().into_owned())
+            .interact_text()?;
+
+        let dest = PathBuf::from(dest_dir);
+        let name = std::path::Path::new(&meta.filename)
+            .file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new("received_file"));
+        Ok(Some(dest.join(name)))
+    } else {
+        Ok(None)
+    }
 }
 
 fn resolve_output(output_dir: &std::path::Path, meta: &Metadata) -> Result<PathBuf> {

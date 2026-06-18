@@ -94,8 +94,12 @@ pub struct SendArgs {
     pub code: Option<String>,
 
     /// Compress chunks with zstd level 1 before encrypting.
-    #[arg(short = 'z', long)]
+    #[arg(short = 'z', long, default_value_t = true, action = clap::ArgAction::Set)]
     pub compress: bool,
+
+    /// Hash algorithm for payload integrity (blake3, rapidhash, sha256).
+    #[arg(long, default_value = "blake3")]
+    pub hash: String,
 
     /// Suppress the progress bar.
     #[arg(long, alias = "no-tui")]

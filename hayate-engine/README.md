@@ -1,24 +1,22 @@
-# Hayate Engine
+# ⚡️ Hayate Engine
 
 [![Crates.io](https://img.shields.io/crates/v/hayate.svg)](https://crates.io/crates/hayate)
 [![Documentation](https://docs.rs/hayate/badge.svg)](https://docs.rs/hayate)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](../LICENSE)
 
-`hayate` is the reusable transfer engine behind the Hayate CLI. It provides high-level sender and receiver builders for encrypted file and directory transfer over QUIC, plus lower-level modules for applications that need direct protocol control.
+`hayate` is the high-performance transfer engine powering the Hayate CLI. It provides high-level `HayateSender` and `HayateReceiver` builders for encrypted file and directory transfers over QUIC, plus low-level modules for apps needing custom protocol control.
 
-The engine uses `compio` for completion-based async I/O, `compio-quic`/`quinn-proto` for QUIC, ephemeral X25519 key agreement, HKDF-SHA256 key derivation, AEAD-encrypted metadata and payload frames, optional zstd compression, and safe tar extraction for directories.
+Driven by `compio` (an `io_uring`/IOCP runtime) and `compio-quic`, Hayate achieves blazing fast throughput utilizing a multi-threaded AEAD and Zstd pipeline, ephemeral X25519 key agreements, dynamic payload hashing (`blake3`, `rapidhash`, `sha256`), and safe `tar` streaming.
 
-## Installation
+## 📥 Installation
 
 ```toml
 [dependencies]
-hayate = "2.1"
+hayate = "2.2"
 compio = { version = "0.19", features = ["macros", "runtime", "fs", "net", "time"] }
 ```
 
-Public async examples are intended to run inside a `compio` runtime.
-
-## Receive
+## 🎯 Receive API
 
 ```rust
 use std::net::SocketAddr;
@@ -32,19 +30,19 @@ async fn main() -> Result<(), hayate::EngineError> {
     let (checksum, path) = receiver.receive(
         "./downloads",
         |meta| {
-            println!("incoming {} ({} bytes)", meta.filename, meta.total_size);
-            true
+            println!("Incoming: {} ({} bytes)", meta.filename, meta.total_size);
+            true // Accept the transfer
         },
-        |bytes| println!("received {bytes} bytes"),
+        |bytes| println!("Received {bytes} bytes"),
     ).await?;
 
-    println!("saved to {}", path.display());
-    println!("sha256 {checksum}");
+    println!("Saved to {}", path.display());
+    println!("Checksum: {checksum}");
     Ok(())
 }
 ```
 
-## Send
+## 🚀 Send API
 
 ```rust
 use std::net::SocketAddr;
@@ -57,24 +55,25 @@ async fn main() -> Result<(), hayate::EngineError> {
     let checksum = HayateSender::new()
         .target(target)
         .compress(true)
-        .send("photos", |bytes| println!("sent {bytes} bytes"))
+        .hash_algo("blake3".to_string())
+        .send("photos", |bytes| println!("Sent {bytes} bytes"))
         .await?;
 
-    println!("sha256 {checksum}");
+    println!("Checksum: {checksum}");
     Ok(())
 }
 ```
 
-## Pairing Mode
+## 🤝 Pairing Mode
 
-Pairing mode discovers the peer through LAN broadcast and uses the same phrase in key derivation:
+Discover peers across the LAN via UDP broadcasts. The code phrase doubles as the HKDF salt.
 
 ```rust
 use hayate::{HayateReceiver, HayateSender};
 
 # async fn sender() -> Result<(), hayate::EngineError> {
 HayateSender::new()
-    .code("apple-bravo-charlie".to_owned())
+    .code("alpha-bravo-charlie".to_owned())
     .send("report.pdf", |_| {})
     .await?;
 # Ok(())
@@ -82,7 +81,7 @@ HayateSender::new()
 
 # async fn receiver() -> Result<(), hayate::EngineError> {
 let (_checksum, _path) = HayateReceiver::new()
-    .code("apple-bravo-charlie".to_owned())
+    .code("alpha-bravo-charlie".to_owned())
     .auto_accept(true)
     .receive("./downloads", |_| true, |_| {})
     .await?;
@@ -90,36 +89,32 @@ let (_checksum, _path) = HayateReceiver::new()
 # }
 ```
 
-Some networks, VPNs, mobile hotspots, and Android devices block broadcast traffic. Use direct mode when discovery is unreliable.
+*Note: Android devices and VPNs often block broadcasts. Fallback to direct IP mode when necessary.*
 
-## Module Map
+## 🗺️ Module Architecture
 
 | Module | Purpose |
 | --- | --- |
 | `runner` | Builder-style APIs: `HayateSender` and `HayateReceiver`. |
-| `transfer` | Handshake, consent, payload send, and payload receive pipeline. |
-| `protocol` | Wire constants, frame flags, metadata encoding, and validation. |
-| `crypto` | X25519, HKDF, AEAD sealing/opening, and cipher selection. |
-| `network` | QUIC endpoint binding, transport config, and ephemeral TLS config. |
-| `discovery` | Pairing-code broadcast and listener utilities. |
-| `tar` | Directory packaging, safe extraction, and directory size estimation. |
-| `local_addr` | Local IPv4 and subnet helpers. |
-| `error` | Shared `EngineError` type. |
+| `transfer` | Pipeline orchestration: handshake, consent, multithreaded receive/send pool. |
+| `protocol` | Wire constants, frame flags, metadata structure, and limits. |
+| `crypto` | Ephemeral X25519, HKDF, AEAD wrappers, and cipher selection. |
+| `network` | QUIC bindings and ephemeral `rustls` configurations. |
+| `discovery` | Pairing-code UDP broadcast and listener logic. |
+| `tar` | Streaming directory packing and extraction. |
+| `local_addr` | Network interface and subnet utilities. |
+| `error` | Defines `EngineError`. |
 
-## Runtime Notes
+## ⚙️ Runtime Notes
 
-`compio` is completion-based: I/O buffers are owned by the operation until completion and returned through `compio::BufResult`. `compio::fs::File` operations are positional and do not maintain an internal cursor, so Hayate tracks offsets explicitly for file reads and writes.
+`compio` uses completion-based I/O. Buffers must be *owned* and passed by value to I/O operations (returning via `compio::BufResult`). 
 
-The runtime is thread-local. Hayate keeps blocking tar work and CPU-heavy compression/encryption off the compio executor with dedicated worker threads while preserving ordered stream writes.
+Hayate isolates blocking logic (`tar` extraction) and heavy CPU tasks (`zstd` / AEAD) off the executor using dedicated worker threads (`std::thread::spawn`) and `flume` channels. A `BTreeMap` handles chunk reordering on the receiver to guarantee sequential disk writes.
 
-## Safety
+## 🛡️ Safety Guarantees
 
-Hayate treats wire data as untrusted:
-
-- Metadata is AEAD-authenticated before use.
-- Unknown transfer types and oversized frames are rejected.
-- File transfers must finish with exactly the announced byte count.
-- Directory payloads are tar streams extracted under a caller-selected output root.
-- Absolute paths, parent traversal, symlinks, and hard links are rejected.
-
-Progress callbacks report plaintext payload bytes. Returned checksums are hex-encoded SHA-256 digests of the plaintext payload stream.
+Hayate treats network data as fundamentally hostile:
+- **Encrypted Metadata:** Filename, size, and hashing choices are authenticated before prompting the user.
+- **Strict Framing:** Frames are length-capped and verified via AEAD before decompression.
+- **Size Verification:** Completed file sizes must match the exact announced byte count.
+- **Path Sanitization:** Directory unpacking rigorously prevents absolute paths, `..` traversals, symlinks, and hard links.
