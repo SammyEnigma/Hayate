@@ -89,12 +89,12 @@ jobs:
           if [ "${{ matrix.is_android }}" = "true" ]; then
             export PATH="${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
           fi
-          cargo build --target ${{ matrix.target }} --release --bin hayate
+          cargo build --target ${{ matrix.target }} --profile release-full --bin hayate
 
       - name: Rename Binary
         shell: bash
         run: |
-          cp target/${{ matrix.target }}/release/${{ matrix.output }} ${{ matrix.rename_to }}
+          cp target/${{ matrix.target }}/release-full/${{ matrix.output }} ${{ matrix.rename_to }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
