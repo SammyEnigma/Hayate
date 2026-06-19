@@ -1,0 +1,25 @@
+{
+  "name": "Hayate Development Environment",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  "features": {
+    "ghcr.io/devcontainers/features/rust:1": {
+      "version": "none",
+      "profile": "minimal"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "ziglang.vscode-zig"
+      ],
+      "settings": {
+        "rust-analyzer.check.command": "clippy",
+        "rust-analyzer.cargo.targetDir": true,
+        "editor.formatOnSave": true
+      }
+    }
+  },
+  "postCreateCommand": "rustup toolchain install nightly && rustup default nightly && sudo apt-get update && sudo apt-get install -y zig && cargo install cargo-zigbuild"
+}
