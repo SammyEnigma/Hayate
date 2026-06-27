@@ -3,13 +3,20 @@ updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "daily"
-      time: "21:00"
-    labels: ["github_actions"]
+      interval: "weekly"
+      day: "monday"
+    labels: ["ci"]
+    groups:
+      actions:
+        patterns: ["*"]
 
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
-      interval: "daily"
-      time: "21:00"
+      interval: "weekly"
+      day: "monday"
     labels: ["dependencies"]
+    groups:
+      cargo:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]

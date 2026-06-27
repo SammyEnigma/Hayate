@@ -1,29 +1,28 @@
-# Hayate website
+# Hayate Docs
 
-## Setup
+Documentation site built with [Rspress v2](https://rspress.dev). Source lives in `docs/docs/`, output goes to `docs/doc_build/`.
 
-Install the dependencies:
+## Quick start
 
 ```bash
-npm install
+pnpm install    # first time only
+pnpm dev        # live preview at http://localhost:5173
+pnpm build      # production build
+pnpm preview    # preview the production build
 ```
 
-## Get started
+## Prebuild
 
-Start the dev server:
+Before every build, `scripts/copy-assets.mjs` copies install scripts and the logo from the project root into `docs/public/`. These are served as static files by the site and used by the install instructions on the home page.
 
-```bash
-npm run dev
-```
+## Writing docs
 
-Build the website for production:
+- MDX syntax (Markdown + JSX components)
+- Frontmatter `description` required on every page for SEO and llms.txt generation
+- Navigation is configured in `_nav.json` and per-section `_meta.json`
 
-```bash
-npm run build
-```
-
-Preview the production build locally:
+## Formatting
 
 ```bash
-npm run preview
+pnpm format
 ```

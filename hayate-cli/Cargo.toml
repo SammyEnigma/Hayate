@@ -7,11 +7,14 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 description = "High-performance command-line utility for direct LAN file transfer."
-documentation = "https://docs.rs/hayate-cli"
+documentation = "https://shiinasaku.github.io/Hayate"
 readme = "../README.md"
 keywords = ["quic", "transfer", "cli", "lan", "utility"]
 categories = ["command-line-utilities", "network-programming"]
 publish = false
+
+[package.metadata.dist]
+dist = true
 
 [lints]
 workspace = true

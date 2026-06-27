@@ -24,16 +24,16 @@ Hayate relies on industry-standard, high-performance cryptography:
 
 ## 1. Ephemeral Key Exchange (X25519 + HKDF)
 
-During the connection handshake, Hayate negotiates a secure symmetric key using an ephemeral Diffie-Hellman key exchange:
+Every Hayate transfer establishes a unique session key:
 
-1. Both the sender and receiver generate a fresh, random ephemeral X25519 keypair.
-2. They exchange their public keys over the QUIC channel.
-3. They perform Diffie-Hellman calculation to arrive at a shared secret.
-4. The shared secret is expanded using **HKDF-SHA256** into a 32-byte symmetric key:
-   - In **Pairing Mode**, the shared code phrase (e.g. `forest-river-mountain`) is used as the high-entropy salt for HKDF.
-   - In **Direct Mode**, a default salt `hayate-v2-default-salt` is used.
+1. Both sides generate a fresh, random ephemeral X25519 keypair.
+2. Public keys are exchanged over the QUIC channel.
+3. A shared secret is computed via Diffie-Hellman.
+4. **HKDF-SHA256** expands the shared secret into a 32-byte AEAD key:
+   - **Pairing Mode** — the code phrase acts as the HKDF salt, so only peers who know the exact phrase can derive the same key.
+   - **Direct Mode** — a fixed salt (`hayate-v2-default-salt`) is used; no passphrase needed but no phrase-based authentication.
 
-This protocol guarantees **Forward Secrecy**: even if a pairing code phrase is compromised in the future, past sessions cannot be decrypted because the ephemeral key pairs are discarded immediately after the transfer completes.
+**Forward secrecy** is guaranteed: ephemeral key material is discarded after each transfer, so past sessions cannot be retroactively decrypted.
 
 ---
 

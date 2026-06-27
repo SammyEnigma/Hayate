@@ -9,8 +9,8 @@ use std::{
     collections::HashSet,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{
-        Mutex,
-        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -33,7 +33,7 @@ struct ProbeOutcome {
     os: String,
 }
 
-pub async fn run(args: DiscoverArgs) -> Result<()> {
+pub async fn run(args: DiscoverArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
     let subnets = if let Some(cidr) = &args.cidr {
         parse_cidr(cidr)?
     } else {
@@ -91,6 +91,7 @@ pub async fn run(args: DiscoverArgs) -> Result<()> {
     let (result_tx, result_rx) = flume::bounded::<ProbeOutcome>(64);
 
     let pb_clone = pb.clone();
+    let cancelled_scan = Arc::clone(&cancelled);
     compio::runtime::spawn(async move {
         stream::iter(targets)
             .map(|addr| {
@@ -98,7 +99,11 @@ pub async fn run(args: DiscoverArgs) -> Result<()> {
                 let found_ref = &found_count;
                 let result_tx = result_tx.clone();
                 let seen = &seen;
+                let cancelled_inner = Arc::clone(&cancelled_scan);
                 async move {
+                    if cancelled_inner.load(Ordering::SeqCst) {
+                        return;
+                    }
                     let outcome = probe_one_with_rtt(addr, timeout).await;
                     pb_ref.inc(1);
                     if let Some(oc) = outcome {
@@ -129,6 +134,9 @@ pub async fn run(args: DiscoverArgs) -> Result<()> {
     // Real-time output: print peers as they are discovered.
     let mut discovered = Vec::new();
     while let Ok(peer) = result_rx.recv_async().await {
+        if cancelled.load(Ordering::SeqCst) {
+            break;
+        }
         let rtt_str = format_rtt(peer.rtt_ms);
         output::peer_found_live(
             &peer.name,

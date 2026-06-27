@@ -45,6 +45,7 @@ walkdir = "2"
 get_if_addrs = "0.5.3"
 local-ip-address = "0.6.13"
 flume = "0.12.0"
+mdns-sd = { version = "0.20", default-features = false }
 clap = { version = "4", features = ["color", "derive", "env"] }
 console = "0.16"
 indicatif = { version = "0.18", features = ["improved_unicode"] }
@@ -75,4 +76,9 @@ debug = true
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
 

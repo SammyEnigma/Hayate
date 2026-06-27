@@ -174,7 +174,7 @@ irm https://shiinasaku.github.io/Hayate/install.ps1 | iex
 
 ### Prerequisites
 
-- Rust toolchain version 1.95 or later.
+- Rust toolchain **1.96** or later.
 
 ### Steps
 

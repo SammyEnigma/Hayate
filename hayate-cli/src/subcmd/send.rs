@@ -1,6 +1,15 @@
 //! `hayate send` subcommand.
 
-use std::{io, net::ToSocketAddrs, path::Path, time::Instant};
+use std::{
+    io,
+    net::ToSocketAddrs,
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Instant,
+};
 
 use anyhow::{Context, Result, bail};
 use compio::io::AsyncRead;
@@ -12,7 +21,10 @@ use hayate::{
 
 use crate::{cli::SendArgs, output};
 
-pub async fn run(args: SendArgs) -> Result<()> {
+pub async fn run(args: SendArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
+    if cancelled.load(Ordering::SeqCst) {
+        bail!("cancelled");
+    }
     let path = &args.path;
     if !path.exists() {
         bail!("Path does not exist: {}", path.display());
@@ -81,14 +93,16 @@ pub async fn run(args: SendArgs) -> Result<()> {
             .context("Failed to bind server socket")?;
         let local_port = endpoint.local_addr()?.port();
 
-        let phrase_clone = phrase.clone();
-        let (cancel_tx, cancel_rx) = flume::bounded(1);
-        let _broadcaster_guard = hayate::discovery::BroadcasterGuard::new(cancel_tx);
-        compio::runtime::spawn(async move {
-            let channel_id = hayate::discovery::derive_channel_id(&phrase_clone);
-            let _ = hayate::discovery::start_broadcaster(&channel_id, local_port, cancel_rx).await;
-        })
-        .detach();
+        let (_cancel_tx, cancel_rx) = flume::bounded(1);
+        let os_name = std::env::consts::OS.to_owned();
+        let channel_id = hayate::discovery::derive_channel_id(&phrase);
+        let _broadcaster_guard = hayate::discovery::start_broadcaster_hybrid(
+            &channel_id,
+            local_port,
+            &os_name,
+            cancel_rx,
+        )
+        .context("Failed to start hybrid broadcaster")?;
 
         let spinner = if args.no_progress {
             None
@@ -178,6 +192,7 @@ pub async fn run(args: SendArgs) -> Result<()> {
     };
 
     let start = Instant::now();
+    let cancelled_transfer = Arc::clone(&cancelled);
 
     let checksum = if path.is_dir() {
         send_directory(
@@ -213,14 +228,26 @@ pub async fn run(args: SendArgs) -> Result<()> {
         .context("Failed to send file contents")?
     };
 
-    compio::time::sleep(std::time::Duration::from_millis(500)).await;
+    if cancelled_transfer.load(Ordering::SeqCst) {
+        conn.close(1u32.into(), b"cancelled");
+        bail!("transfer cancelled");
+    }
+
+    // Finish the send stream and notify receiver we're done sending.
     send_stream
         .finish()
         .context("Failed to finalize send stream")?;
 
-    // Wait for receiver to finish processing and close the connection
+    // Wait for the receiver to acknowledge completion with a time-bounded read.
+    // If the receiver has closed the connection, reading will either return
+    // EOF (Ok(0)) or an error. We use a timeout to avoid hanging if the
+    // receiver disappears.
     let drain_buf = vec![0u8; 1];
-    let _ = recv_stream.read(drain_buf).await;
+    let _ = compio::time::timeout(
+        std::time::Duration::from_secs(10),
+        recv_stream.read(drain_buf),
+    )
+    .await;
 
     if let Some(pb) = &pb {
         output::finish_transfer_progress(pb, total_size);
@@ -237,6 +264,7 @@ pub async fn run(args: SendArgs) -> Result<()> {
         output::cipher_name(cipher_id),
     );
 
+    conn.close(0u32.into(), b"complete");
     Ok(())
 }
 

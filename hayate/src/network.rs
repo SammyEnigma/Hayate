@@ -65,16 +65,35 @@ pub fn build_transport_config() -> Arc<quinn_proto::TransportConfig> {
 
     #[cfg(not(target_os = "android"))]
     {
-        // macOS/Linux/Windows: Massive buffers for 10Gbps line rate.
-        config.stream_receive_window(quinn_proto::VarInt::from_u32(25_165_824)); // 24 MB
-        config.receive_window(quinn_proto::VarInt::from_u32(50_331_648)); // 48 MB
-        config.send_window(50_331_648); // 48 MB
+        // macOS/Linux/Windows: Large buffers for high-speed LAN transfers.
+        // On Windows, IOCP may need slightly smaller windows to avoid
+        // non-paged pool exhaustion with many concurrent streams.
+        #[cfg(target_os = "windows")]
+        {
+            config.stream_receive_window(quinn_proto::VarInt::from_u32(16_777_216)); // 16 MB
+            config.receive_window(quinn_proto::VarInt::from_u32(33_554_432)); // 32 MB
+            config.send_window(33_554_432); // 32 MB
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            config.stream_receive_window(quinn_proto::VarInt::from_u32(25_165_824)); // 24 MB
+            config.receive_window(quinn_proto::VarInt::from_u32(50_331_648)); // 48 MB
+            config.send_window(50_331_648); // 48 MB
+        }
     }
 
-    // 3. Keep-alive and MTU optimizations
-    config.keep_alive_interval(Some(std::time::Duration::from_secs(5)));
+    // 3. Keep-alive and timeout settings — tuned for large file transfers.
+    // Keep-alive pings every 3 s prevent NAT/firewall timeouts during
+    // transfers that saturate the link but produce no QUIC ACKs.
+    config.keep_alive_interval(Some(std::time::Duration::from_secs(3)));
+
+    // Idle timeout extended to 5 minutes so slow links and very large
+    // files (100+ GB) don't trigger spurious disconnects.
+    config.max_idle_timeout(Some(
+        quinn_proto::VarInt::from_u32(300_000).into(), // 5 min
+    ));
+
     config.initial_mtu(1450);
-    config.max_idle_timeout(Some(quinn_proto::VarInt::from_u32(60_000).into()));
     config.enable_segmentation_offload(true);
 
     Arc::new(config)
@@ -130,14 +149,31 @@ pub async fn bind_server(addr: SocketAddr) -> Result<Endpoint, EngineError> {
     )
     .map_err(EngineError::Io)?;
 
-    // Set 25MB buffers and non-blocking
+    // Set large buffer sizes and non-blocking.
+    // On Windows, SO_RCVBUF/SO_SNDBUF behave differently (they set the
+    // total buffer, not the per-socket minimum), so we use a value that
+    // works across platforms without exceeding OS limits.
     socket.set_nonblocking(true).map_err(EngineError::Io)?;
-    socket
-        .set_recv_buffer_size(26_214_400)
-        .map_err(EngineError::Io)?;
-    socket
-        .set_send_buffer_size(26_214_400)
-        .map_err(EngineError::Io)?;
+
+    #[cfg(target_os = "windows")]
+    {
+        socket
+            .set_recv_buffer_size(8_388_608)
+            .map_err(EngineError::Io)?;
+        socket
+            .set_send_buffer_size(8_388_608)
+            .map_err(EngineError::Io)?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        socket
+            .set_recv_buffer_size(26_214_400)
+            .map_err(EngineError::Io)?;
+        socket
+            .set_send_buffer_size(26_214_400)
+            .map_err(EngineError::Io)?;
+    }
+
     socket.bind(&addr.into()).map_err(EngineError::Io)?;
     let std_socket: std::net::UdpSocket = socket.into();
     let compio_socket = compio::net::UdpSocket::from_std(std_socket).map_err(EngineError::Io)?;
@@ -160,14 +196,27 @@ pub async fn bind_client() -> Result<Endpoint, EngineError> {
     )
     .map_err(EngineError::Io)?;
 
-    // Set 25MB buffers and non-blocking
     socket.set_nonblocking(true).map_err(EngineError::Io)?;
-    socket
-        .set_recv_buffer_size(26_214_400)
-        .map_err(EngineError::Io)?;
-    socket
-        .set_send_buffer_size(26_214_400)
-        .map_err(EngineError::Io)?;
+
+    #[cfg(target_os = "windows")]
+    {
+        socket
+            .set_recv_buffer_size(8_388_608)
+            .map_err(EngineError::Io)?;
+        socket
+            .set_send_buffer_size(8_388_608)
+            .map_err(EngineError::Io)?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        socket
+            .set_recv_buffer_size(26_214_400)
+            .map_err(EngineError::Io)?;
+        socket
+            .set_send_buffer_size(26_214_400)
+            .map_err(EngineError::Io)?;
+    }
+
     socket.bind(&bind_addr.into()).map_err(EngineError::Io)?;
     let std_socket: std::net::UdpSocket = socket.into();
     let compio_socket = compio::net::UdpSocket::from_std(std_socket).map_err(EngineError::Io)?;

@@ -3,6 +3,10 @@
 use std::{
     net::SocketAddr,
     path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -15,7 +19,7 @@ use hayate::{
 
 use crate::{cli::ReceiveArgs, output};
 
-pub async fn run(args: ReceiveArgs) -> Result<()> {
+pub async fn run(args: ReceiveArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
     if let Some(code) = &args.code {
         // ── Pairing-code mode ────────────────────────────────────────
         output::stage("pairing", format!("scanning for code \"{code}\""));
@@ -26,12 +30,15 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
             s.set_message("listening for sender broadcast…");
             Some(s)
         };
+
+        if cancelled.load(Ordering::SeqCst) {
+            bail!("cancelled");
+        }
+
         let peer_addr = match hayate::discovery::listen_for_broadcast(
             Some(code.as_str()),
-            Duration::from_secs(30),
-        )
-        .await?
-        {
+            Duration::from_secs(60),
+        )? {
             Some((_name, addr, _os)) => {
                 if let Some(s) = &spinner {
                     s.finish_and_clear();
@@ -108,6 +115,9 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
         };
 
         let accept = dest.is_some();
+        if cancelled.load(Ordering::SeqCst) {
+            bail!("cancelled");
+        }
         transfer::send_consent_write(&mut send_stream, accept)
             .await
             .context("Failed to send transfer acceptance to peer")?;
@@ -131,6 +141,7 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
         };
 
         let pb_clone = pb.clone();
+        let cancelled_clone = Arc::clone(&cancelled);
         let checksum_result = transfer::receive_payload_split(
             &key,
             cipher_id,
@@ -140,6 +151,9 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
             meta.total_size,
             &meta.hash_algo,
             move |bytes| {
+                if cancelled_clone.load(Ordering::SeqCst) {
+                    return;
+                }
                 if let Some(pb) = &pb_clone {
                     output::set_transfer_position(pb, bytes);
                 }
@@ -150,6 +164,10 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
 
         if let Some(pb) = &pb {
             output::finish_transfer_progress(pb, meta.total_size);
+        }
+
+        if cancelled.load(Ordering::SeqCst) {
+            bail!("transfer cancelled");
         }
 
         let checksum = checksum_result?;
@@ -163,6 +181,11 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
             false,
             output::cipher_name(cipher_id),
         );
+
+        // Finish our send stream to signal the sender we're done, then
+        // close the connection gracefully.
+        let _ = send_stream.finish();
+        compio::time::sleep(std::time::Duration::from_millis(200)).await;
         conn.close(0u32.into(), b"complete");
         return Ok(());
     }
@@ -193,6 +216,10 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
     };
 
     loop {
+        if cancelled.load(Ordering::SeqCst) {
+            break;
+        }
+
         let incoming = match endpoint.wait_incoming().await {
             Some(i) => {
                 if let Some(s) = &spinner {
@@ -257,6 +284,9 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
         };
 
         let accept = dest.is_some();
+        if cancelled.load(Ordering::SeqCst) {
+            break;
+        }
         if let Err(e) = transfer::send_consent_write(&mut send_stream, accept).await {
             output::err(&format!("Failed to send transfer consent: {e}"));
             continue;
@@ -280,6 +310,7 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
         };
 
         let pb_clone = pb.clone();
+        let cancelled_clone = Arc::clone(&cancelled);
         let receive_result = transfer::receive_payload_split(
             &key,
             cipher_id,
@@ -289,6 +320,9 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
             meta.total_size,
             &meta.hash_algo,
             move |bytes| {
+                if cancelled_clone.load(Ordering::SeqCst) {
+                    return;
+                }
                 if let Some(pb) = &pb_clone {
                     output::set_transfer_position(pb, bytes);
                 }
@@ -309,6 +343,10 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
             }
         };
 
+        if cancelled.load(Ordering::SeqCst) {
+            break;
+        }
+
         let elapsed = start.elapsed().as_secs_f64();
         output::print_transfer_summary(
             &meta.filename,
@@ -318,6 +356,10 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
             false,
             output::cipher_name(cipher_id),
         );
+
+        // Finish our send stream to signal the sender, then close.
+        let _ = send_stream.finish();
+        compio::time::sleep(std::time::Duration::from_millis(200)).await;
         conn.close(0u32.into(), b"complete");
         break;
     }

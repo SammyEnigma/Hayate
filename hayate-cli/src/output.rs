@@ -2,6 +2,11 @@
 //!
 //! All visual output flows through this module so the rest of the CLI never
 //! constructs raw ANSI escapes or guesses column widths.
+//!
+//! On terminals that do not support Unicode (e.g. legacy Windows CMD,
+//! some Termux configurations), box-drawing glyphs fall back to plain ASCII.
+
+use std::io::IsTerminal;
 
 use console::style;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
@@ -9,30 +14,93 @@ use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 const VERSION: &str = env!("GIT_VERSION");
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Unicode status icons
+// Terminal capability detection
 // ─────────────────────────────────────────────────────────────────────────────
 
-const ICON_INFO: &str = "ℹ";
-const ICON_OK: &str = "✓";
-const ICON_WARN: &str = "⚠";
-const ICON_ERR: &str = "✗";
-const ICON_ARROW: &str = "▶";
-const ICON_DOT: &str = "●";
-const ICON_LOCK: &str = "🔒";
+thread_local! {
+    /// Whether the output terminal supports Unicode.
+    static UNICODE_CAPABLE: bool = {
+        // NO_COLOR-conformant terminals are assumed to handle Unicode
+        // reasonably well. For Windows, we fall back to ASCII if the
+        // terminal doesn't claim UTF-8 support.
+        if cfg!(windows) {
+            // On Windows, only enable Unicode box drawing if the console
+            // output code page is 65001 (UTF-8).
+            std::env::var_os("WT_SESSION").is_some()
+                || std::env::var_os("TERM_PROGRAM").is_some()
+        } else {
+            // On Unix/macOS/Termux, assume Unicode is available.
+            true
+        }
+    };
+
+    /// Whether stdout is a true terminal (not piped/redirected).
+    static IS_TTY: bool = std::io::stdout().is_terminal();
+}
+
+/// Returns `true` when stdout is a real terminal (not piped or redirected).
+#[inline]
+pub fn is_tty() -> bool {
+    IS_TTY.with(|v| *v)
+}
+
+/// Returns `true` when the terminal supports Unicode box-drawing glyphs.
+#[inline]
+pub fn unicode_capable() -> bool {
+    UNICODE_CAPABLE.with(|v| *v)
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Box-drawing primitives
+// Status icons — Unicode when available, ASCII fallbacks otherwise
 // ─────────────────────────────────────────────────────────────────────────────
 
-const BOX_TL: &str = "╭";
-const BOX_TR: &str = "╮";
-const BOX_BL: &str = "╰";
-const BOX_BR: &str = "╯";
-const BOX_H: &str = "─";
-const BOX_V: &str = "│";
+fn icon_info() -> &'static str {
+    if unicode_capable() { "ℹ" } else { "i" }
+}
+fn icon_ok() -> &'static str {
+    if unicode_capable() { "✓" } else { "OK" }
+}
+fn icon_warn() -> &'static str {
+    if unicode_capable() { "⚠" } else { "!" }
+}
+fn icon_err() -> &'static str {
+    if unicode_capable() { "✗" } else { "X" }
+}
+fn icon_arrow() -> &'static str {
+    if unicode_capable() { "▶" } else { ">" }
+}
+fn icon_dot() -> &'static str {
+    if unicode_capable() { "●" } else { "*" }
+}
+fn icon_lock() -> &'static str {
+    if unicode_capable() { "🔒" } else { "(lock)" }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Box-drawing primitives — Unicode or ASCII
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn box_tl() -> &'static str {
+    if unicode_capable() { "╭" } else { "+" }
+}
+fn box_tr() -> &'static str {
+    if unicode_capable() { "╮" } else { "+" }
+}
+fn box_bl() -> &'static str {
+    if unicode_capable() { "╰" } else { "+" }
+}
+fn box_br() -> &'static str {
+    if unicode_capable() { "╯" } else { "+" }
+}
+fn box_h() -> &'static str {
+    if unicode_capable() { "─" } else { "-" }
+}
+fn box_v() -> &'static str {
+    if unicode_capable() { "│" } else { "|" }
+}
 
 fn box_line(width: usize) -> String {
-    BOX_H.repeat(width)
+    box_h().repeat(width)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -43,7 +111,7 @@ pub fn print_banner() {
     let term = console::Term::stdout();
     let width = term.size_checked().map(|(_, w)| w).unwrap_or(80);
 
-    if width >= 45 {
+    if unicode_capable() && width >= 45 {
         let logo = r#"
     __  _______  _____  ____________
    / / / /   \ \/ /   |/_  __/ ____/
@@ -54,14 +122,15 @@ pub fn print_banner() {
         println!("{}", style(logo).bold().cyan());
     } else {
         let logo = r#"
- _  _   ___   ___ _____ ___ 
-| || | /_\ \ / /_\_   _| __|
-| __ |/ _ \ V / _ \| | | _| 
-|_||_/_/ \_\_/_/ \_\_| |___|
+  _  _   ___   ___ _____ ___ 
+ | || | /_\ \ / /_\_   _| __|
+ | __ |/ _ \ V / _ \| | | _| 
+ |_||_/_/ \_\_/_/ \_\_| |___|
 "#;
         println!("{}", style(logo).bold().cyan());
     }
 
+    let separator = if unicode_capable() { "━" } else { "=" };
     println!(
         "   {} {} {} {} {}",
         style("Hayate").bold().green(),
@@ -70,7 +139,7 @@ pub fn print_banner() {
         style("│").dim(),
         style(format!("v{VERSION}")).cyan().bold()
     );
-    println!("   {}", style("━".repeat(50)).dim());
+    println!("   {}", style(separator.repeat(50)).dim());
     println!();
 }
 
@@ -81,40 +150,45 @@ pub fn print_banner() {
 pub fn info(msg: &str) {
     println!(
         "   {}  {}",
-        style(ICON_INFO).bold().blue(),
+        style(icon_info()).bold().blue(),
         style(msg).white()
     );
 }
 
 pub fn ok(msg: &str) {
-    println!("   {}  {}", style(ICON_OK).bold().green(), msg);
+    println!("   {}  {}", style(icon_ok()).bold().green(), msg);
 }
 
 pub fn warn(msg: &str) {
     println!(
         "   {}  {}",
-        style(ICON_WARN).bold().yellow(),
+        style(icon_warn()).bold().yellow(),
         style(msg).yellow()
     );
 }
 
 pub fn err(msg: &str) {
-    eprintln!("   {}  {}", style(ICON_ERR).bold().red(), style(msg).red());
+    eprintln!(
+        "   {}  {}",
+        style(icon_err()).bold().red(),
+        style(msg).red()
+    );
 }
 
 pub fn print_error(err: &anyhow::Error) {
     let mut chain = err.chain();
+    let branch = if unicode_capable() { "└─" } else { "`-" };
     if let Some(top_err) = chain.next() {
         eprintln!(
             "   {}  {}",
-            style(ICON_ERR).bold().red(),
+            style(icon_err()).bold().red(),
             style(top_err.to_string()).bold().red()
         );
     }
     for cause in chain {
         eprintln!(
             "      {} {}",
-            style("└─").dim(),
+            style(branch).dim(),
             style(cause.to_string()).dim()
         );
     }
@@ -123,7 +197,7 @@ pub fn print_error(err: &anyhow::Error) {
 pub fn stage(name: &str, detail: impl std::fmt::Display) {
     println!(
         "   {}  {:<11} {}",
-        style(ICON_ARROW).bold().cyan(),
+        style(icon_arrow()).bold().cyan(),
         style(name).bold(),
         style(detail).white()
     );
@@ -143,56 +217,57 @@ pub fn key_value(key: &str, value: impl std::fmt::Display) {
 
 pub fn pairing_code(code: &str, command: &str) {
     let inner_width = 50;
+    let v = box_v();
     println!();
     println!(
         "   {}{}{}",
-        style(BOX_TL).dim(),
+        style(box_tl()).dim(),
         style(box_line(inner_width)).dim(),
-        style(BOX_TR).dim()
+        style(box_tr()).dim()
     );
     println!(
         "   {}  {} {}{}",
-        style(BOX_V).dim(),
-        style(ICON_LOCK).bold(),
+        style(v).dim(),
+        style(icon_lock()).bold(),
         style(" Pairing Code").bold().cyan(),
-        pad_right("", inner_width - 18, BOX_V),
+        pad_right("", inner_width - 18, v),
     );
     println!(
         "   {}{}{}",
-        style(BOX_V).dim(),
+        style(v).dim(),
         style(format!("  {}", box_line(inner_width - 2))).dim(),
-        style(BOX_V).dim()
+        style(v).dim()
     );
     println!(
         "   {}  {}{}",
-        style(BOX_V).dim(),
+        style(v).dim(),
         style(code).bold().yellow(),
-        pad_right(code, inner_width - 2, BOX_V),
+        pad_right(code, inner_width - 2, v),
     );
     println!(
         "   {}{}{}",
-        style(BOX_V).dim(),
+        style(v).dim(),
         style(format!("  {}", box_line(inner_width - 2))).dim(),
-        style(BOX_V).dim()
+        style(v).dim()
     );
     println!(
         "   {}  {} {}{}",
-        style(BOX_V).dim(),
-        style(ICON_DOT).dim(),
+        style(v).dim(),
+        style(icon_dot()).dim(),
         style("Run on receiver:").dim(),
-        pad_right("● Run on receiver:", inner_width - 2, BOX_V),
+        pad_right("● Run on receiver:", inner_width - 2, v),
     );
     println!(
         "   {}  {}{}",
-        style(BOX_V).dim(),
+        style(v).dim(),
         style(command).green().bold(),
-        pad_right(command, inner_width - 2, BOX_V),
+        pad_right(command, inner_width - 2, v),
     );
     println!(
         "   {}{}{}",
-        style(BOX_BL).dim(),
+        style(box_bl()).dim(),
         style(box_line(inner_width)).dim(),
-        style(BOX_BR).dim()
+        style(box_br()).dim()
     );
     println!();
 }
@@ -224,46 +299,47 @@ pub fn cipher_name(cipher_id: u8) -> &'static str {
 /// Displays a compact info card with key-value pairs inside a box.
 pub fn print_info_card(title: &str, rows: &[(&str, String)]) {
     let inner_width = 54;
+    let v = box_v();
     println!();
     // Top border
     println!(
         "   {}{}{}",
-        style(BOX_TL).cyan(),
+        style(box_tl()).cyan(),
         style(box_line(inner_width)).cyan(),
-        style(BOX_TR).cyan()
+        style(box_tr()).cyan()
     );
     // Title row
-    let title_display = format!("  {} {}", ICON_ARROW, title);
+    let title_display = format!("  {} {}", icon_arrow(), title);
     println!(
         "   {} {}{}",
-        style(BOX_V).cyan(),
+        style(v).cyan(),
         style(&title_display).bold().cyan(),
-        pad_right_colored(&title_display, inner_width - 1, BOX_V),
+        pad_right_colored(&title_display, inner_width - 1, v),
     );
     // Separator
     println!(
         "   {}{}{}",
-        style(BOX_V).cyan(),
+        style(v).cyan(),
         style(format!("  {}", box_line(inner_width - 2))).dim(),
-        style(BOX_V).cyan()
+        style(v).cyan()
     );
     // Key-value rows
     for (key, value) in rows {
         let row_text = format!("  {:<12} {}", key, value);
         println!(
             "   {}    {} {}{}",
-            style(BOX_V).cyan(),
+            style(v).cyan(),
             style(format!("{key:<12}")).dim(),
             style(value).white().bold(),
-            pad_right_colored(&row_text, inner_width - 1, BOX_V),
+            pad_right_colored(&row_text, inner_width - 1, v),
         );
     }
     // Bottom border
     println!(
         "   {}{}{}",
-        style(BOX_BL).cyan(),
+        style(box_bl()).cyan(),
         style(box_line(inner_width)).cyan(),
-        style(BOX_BR).cyan()
+        style(box_br()).cyan()
     );
     println!();
 }
@@ -307,17 +383,42 @@ pub fn print_transfer_offer(
 // Progress bar
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Returns progress characters that render on the current terminal.
+fn progress_chars() -> &'static str {
+    if unicode_capable() {
+        "━━╸ "
+    } else {
+        "==> "
+    }
+}
+
+fn spinner_tick_chars() -> &'static str {
+    if unicode_capable() {
+        "⣾⣽⣻⢿⡿⣟⣯⣷⠿"
+    } else {
+        "/-\\|"
+    }
+}
+
 /// Creates a labelled transfer progress bar with premium styling.
 pub fn transfer_progress_bar(label: &str, total_bytes: u64) -> ProgressBar {
-    let style = ProgressStyle::with_template(
-        "   {prefix:.bold.cyan} [{elapsed_precise}] {wide_bar:.cyan/dark.cyan} {bytes}/{total_bytes} {bytes_per_sec:.green} ETA {eta_precise:.dim}",
-    )
-    .expect("valid template")
-    .progress_chars("━━╸ ");
+    let template = if unicode_capable() {
+        "   {prefix:.bold.cyan} {spinner} {wide_bar:.cyan/blue} {bytes:>10}/{total_bytes:10}  {bytes_per_sec:>11.green}  {eta:>6.dim}"
+    } else {
+        "   {prefix:.bold} {spinner} {wide_bar} {bytes:>10}/{total_bytes:10}  {bytes_per_sec:>11}  {eta:>6}"
+    };
+    let style = ProgressStyle::with_template(template)
+        .expect("valid template")
+        .progress_chars(progress_chars());
     let pb = ProgressBar::new(total_bytes);
     pb.set_style(style);
-    pb.set_prefix(label.to_owned());
-    pb.set_draw_target(ProgressDrawTarget::stdout_with_hz(12));
+    pb.set_prefix(format!("{label:>8}"));
+    if is_tty() {
+        pb.set_draw_target(ProgressDrawTarget::stdout_with_hz(15));
+        pb.enable_steady_tick(std::time::Duration::from_millis(100));
+    } else {
+        pb.set_draw_target(ProgressDrawTarget::hidden());
+    }
     pb
 }
 
@@ -337,31 +438,45 @@ pub fn finish_transfer_progress(pb: &ProgressBar, total_bytes: u64) {
 
 /// Creates a spinner for indeterminate progress.
 pub fn spinner(prefix: &str) -> ProgressBar {
-    let style = ProgressStyle::with_template(&format!(
-        "   {{spinner:.cyan.bold}} {} {{msg:.dim}}",
-        style(prefix).bold()
-    ))
-    .expect("valid template")
-    .tick_chars("⣾⣽⣻⢿⡿⣟⣯⣷⠿");
+    let template = if unicode_capable() {
+        "   {spinner:.cyan.bold}  {prefix:.bold}  {msg:.dim.white}"
+    } else {
+        "   {spinner}  {prefix}  {msg}"
+    };
+    let style = ProgressStyle::with_template(template)
+        .expect("valid template")
+        .tick_chars(spinner_tick_chars());
     let pb = ProgressBar::new_spinner();
     pb.set_style(style);
-    pb.set_draw_target(ProgressDrawTarget::stdout_with_hz(12));
-    pb.enable_steady_tick(std::time::Duration::from_millis(80));
+    pb.set_prefix(prefix.to_owned());
+    if is_tty() {
+        pb.set_draw_target(ProgressDrawTarget::stdout_with_hz(15));
+        pb.enable_steady_tick(std::time::Duration::from_millis(80));
+    } else {
+        pb.set_draw_target(ProgressDrawTarget::hidden());
+    }
     pb
 }
 
 /// Creates a progress bar for network scanning with host count.
 pub fn scan_progress_bar(total_hosts: u64) -> ProgressBar {
-    let style = ProgressStyle::with_template(
-        "   {spinner:.cyan.bold} Scanning [{wide_bar:.blue/dark.blue}] {pos}/{len} hosts {msg:.dim}",
-    )
-    .expect("valid template")
-    .progress_chars("━━╸ ")
-    .tick_chars("⣾⣽⣻⢿⡿⣟⣯⣷⠿");
+    let template = if unicode_capable() {
+        "   {spinner:.cyan.bold}  Scanning {wide_bar:.cyan/blue} {pos:>4}/{len:<4} hosts  {msg:.dim.white}"
+    } else {
+        "   {spinner}  Scanning {wide_bar} {pos:>4}/{len:<4} hosts  {msg}"
+    };
+    let style = ProgressStyle::with_template(template)
+        .expect("valid template")
+        .progress_chars(progress_chars())
+        .tick_chars(spinner_tick_chars());
     let pb = ProgressBar::new(total_hosts);
     pb.set_style(style);
-    pb.set_draw_target(ProgressDrawTarget::stdout_with_hz(12));
-    pb.enable_steady_tick(std::time::Duration::from_millis(80));
+    if is_tty() {
+        pb.set_draw_target(ProgressDrawTarget::stdout_with_hz(15));
+        pb.enable_steady_tick(std::time::Duration::from_millis(80));
+    } else {
+        pb.set_draw_target(ProgressDrawTarget::hidden());
+    }
     pb
 }
 
@@ -394,6 +509,7 @@ pub fn print_peer_table(peers: &[(String, std::net::SocketAddr, String)]) {
     }
 
     let inner_width = 62;
+    let v = box_v();
     println!();
     ok(&format!("Discovered {} peer(s)", peers.len()));
     println!();
@@ -401,24 +517,24 @@ pub fn print_peer_table(peers: &[(String, std::net::SocketAddr, String)]) {
     // Header
     println!(
         "   {}{}{}",
-        style(BOX_TL).dim(),
+        style(box_tl()).dim(),
         style(box_line(inner_width)).dim(),
-        style(BOX_TR).dim()
+        style(box_tr()).dim()
     );
     println!(
         "   {}  {:<4} {:<22} {:<24} {}  {}",
-        style(BOX_V).dim(),
+        style(v).dim(),
         style("#").bold().dim(),
         style("NAME").bold().dim(),
         style("ADDRESS").bold().dim(),
         style("OS").bold().dim(),
-        style(BOX_V).dim()
+        style(v).dim()
     );
     println!(
         "   {}{}{}",
-        style(BOX_V).dim(),
+        style(v).dim(),
         style(format!("  {}", box_line(inner_width - 2))).dim(),
-        style(BOX_V).dim()
+        style(v).dim()
     );
 
     // Rows
@@ -433,7 +549,7 @@ pub fn print_peer_table(peers: &[(String, std::net::SocketAddr, String)]) {
         let addr_str = addr.to_string();
         println!(
             "   {}  {:<4} {:<22} {:<24} {}{}",
-            style(BOX_V).dim(),
+            style(v).dim(),
             style(&num).cyan().bold(),
             style(&name_display).white(),
             style(&addr_str).green(),
@@ -441,7 +557,7 @@ pub fn print_peer_table(peers: &[(String, std::net::SocketAddr, String)]) {
             pad_right(
                 &format!("  {num:<4} {name_display:<22} {addr_str:<24} {os}"),
                 inner_width,
-                BOX_V,
+                v,
             )
         );
     }
@@ -449,9 +565,9 @@ pub fn print_peer_table(peers: &[(String, std::net::SocketAddr, String)]) {
     // Bottom border
     println!(
         "   {}{}{}",
-        style(BOX_BL).dim(),
+        style(box_bl()).dim(),
         style(box_line(inner_width)).dim(),
-        style(BOX_BR).dim()
+        style(box_br()).dim()
     );
     println!();
 }
@@ -490,28 +606,29 @@ pub fn print_transfer_summary(
     ];
 
     let inner_width = 54;
+    let v = box_v();
     println!();
     // Top border
     println!(
         "   {}{}{}",
-        style(BOX_TL).green(),
+        style(box_tl()).green(),
         style(box_line(inner_width)).green(),
-        style(BOX_TR).green()
+        style(box_tr()).green()
     );
     // Title
-    let title_text = format!("  {} Transfer Complete", ICON_OK);
+    let title_text = format!("  {} Transfer Complete", icon_ok());
     println!(
         "   {} {}{}",
-        style(BOX_V).green(),
+        style(v).green(),
         style(&title_text).bold().green(),
-        pad_right_green(&title_text, inner_width - 1),
+        pad_right_green(&title_text, inner_width - 1, v),
     );
     // Separator
     println!(
         "   {}{}{}",
-        style(BOX_V).green(),
+        style(v).green(),
         style(format!("  {}", box_line(inner_width - 2))).dim(),
-        style(BOX_V).green()
+        style(v).green()
     );
     // Rows
     for (key, value) in &rows {
@@ -519,39 +636,39 @@ pub fn print_transfer_summary(
         if *key == "speed" {
             println!(
                 "   {}    {} {}{}",
-                style(BOX_V).green(),
+                style(v).green(),
                 style(format!("{key:<12}")).dim(),
                 speed_styled,
-                pad_right_green(&row_text, inner_width - 1),
+                pad_right_green(&row_text, inner_width - 1, v),
             );
         } else {
             println!(
                 "   {}    {} {}{}",
-                style(BOX_V).green(),
+                style(v).green(),
                 style(format!("{key:<12}")).dim(),
                 style(value).white().bold(),
-                pad_right_green(&row_text, inner_width - 1),
+                pad_right_green(&row_text, inner_width - 1, v),
             );
         }
     }
     // Bottom border
     println!(
         "   {}{}{}",
-        style(BOX_BL).green(),
+        style(box_bl()).green(),
         style(box_line(inner_width)).green(),
-        style(BOX_BR).green()
+        style(box_br()).green()
     );
     println!();
 }
 
-fn pad_right_green(raw_text: &str, total_width: usize) -> String {
+fn pad_right_green(raw_text: &str, total_width: usize, v: &str) -> String {
     let content_len = console::measure_text_width(raw_text);
     let pad = if total_width > content_len {
         total_width - content_len
     } else {
         1
     };
-    format!("{}{}", " ".repeat(pad), style(BOX_V).green())
+    format!("{}{}", " ".repeat(pad), style(v).green())
 }
 
 /// Color-code speed based on performance tiers.
@@ -636,9 +753,10 @@ pub fn get_backend_name() -> &'static str {
 
 pub fn print_listener_active(addr: impl std::fmt::Display) {
     let backend = get_backend_name();
+    let dot = if unicode_capable() { "●" } else { "*" };
     println!(
         "   {}  {} {} {} {} {}",
-        style("●").bold().green(),
+        style(dot).bold().green(),
         style("Listening on").bold().white(),
         style(addr.to_string()).bold().yellow(),
         style("via").white(),

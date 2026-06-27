@@ -1,9 +1,10 @@
 {
-  "name": "rspress-doc-template",
-  "version": "1.0.0",
+  "name": "hayate-docs",
+  "version": "4.0.0",
   "private": true,
   "type": "module",
   "scripts": {
+    "prebuild": "node scripts/copy-assets.mjs",
     "build": "rspress build",
     "dev": "rspress dev",
     "format": "prettier --write .",

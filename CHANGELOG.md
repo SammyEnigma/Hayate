@@ -1,139 +1,68 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
-
-## [4.0.0](https://github.com/ShiinaSaku/Hayate/compare/v3.0.0...v4.0.0) - 2026-06-27
-
-### Other
-
-- deep engine audit — hot-path optimisations, protocol safety, discovery overhaul
-
-## [3.0.0](https://github.com/ShiinaSaku/Hayate/compare/v2.1.1...v3.0.0) - 2026-06-18
-
-### Added
-
-- multithreaded receiver and dynamic hashing
-- add release-plz and codebase improvements
-
-### Changed
-
-- structure,improve speeds and prepare v3
-
-### Other
-
-- bump crate versions ([#9](https://github.com/ShiinaSaku/Hayate/pull/9))
-- Add CodSpeed performance benchmarks and CI workflow ([#5](https://github.com/ShiinaSaku/Hayate/pull/5))
-
-## [2.0.0] - 2026-06-02
-
-### Other
-
-- Create install.sh ([ece0bf7cdd8d8c0f5cb9da94778d23201e19efbe](https://github.com/ShiinaSaku/Hayate/commit/ece0bf7cdd8d8c0f5cb9da94778d23201e19efbe)) by 椎名 朔
-- Add windows install script ([ab2c0764532ac7fd167cfb54ce8dfb055e619fc5](https://github.com/ShiinaSaku/Hayate/commit/ab2c0764532ac7fd167cfb54ce8dfb055e619fc5)) by 椎名 朔
-- Update install.sh ([0c8d0eb9bbd51a3094f1736908bdbb848eaa2b30](https://github.com/ShiinaSaku/Hayate/commit/0c8d0eb9bbd51a3094f1736908bdbb848eaa2b30)) by 椎名 朔
-- Patch script ([aac92c5f5eaef337b2110c12533e61abcb783baa](https://github.com/ShiinaSaku/Hayate/commit/aac92c5f5eaef337b2110c12533e61abcb783baa)) by 椎名 朔
-- Patch ([4f6765a26ef8bb45977d3429de949e021a352521](https://github.com/ShiinaSaku/Hayate/commit/4f6765a26ef8bb45977d3429de949e021a352521)) by 椎名 朔
-- Merge pull request #1 from ZG089/master
-
-scripts: let curl fail on http 4xx-5xx errors ([b4380c9a3b947ebd1df14ec22634f66bf200285b](https://github.com/ShiinaSaku/Hayate/commit/b4380c9a3b947ebd1df14ec22634f66bf200285b)) by ZGX089
-
-- Update ci.yml ([22a908fab1db6f46c3211d58d8e9e81fe4bbdbb7](https://github.com/ShiinaSaku/Hayate/commit/22a908fab1db6f46c3211d58d8e9e81fe4bbdbb7)) by 椎名 朔
-- Create FUNDING.yml ([cf223ab3a7180d3ec473694703969077f7d1fcc6](https://github.com/ShiinaSaku/Hayate/commit/cf223ab3a7180d3ec473694703969077f7d1fcc6)) by 椎名 朔
-- Rewrite hayate with rust (#3)
-
-* refactor: remove Go implementation in preparation for Rust rewrite
-
-* feat(rust): initialize compio-based rust cargo workspace
-
-* feat(engine): define workspace core types and engine library entry
-
-* feat(engine): implement x25519 ecdh key exchange and chacha20poly1305 aead encryption
-
-* feat(engine): implement udp broadcast pairing and target channel filter
-
-* feat(engine): implement file tar extraction, protocol framing, and quic configuration
-
-* feat(engine): implement zero-copy async send and receive payload pipelines
-
-* feat(cli): define command structure, output utilities, and random phrase generator
-
-* feat(cli): implement concurrent subnet port discovery scanner
-
-* feat(cli): implement async file send orchestrator and broadcaster
-
-* feat(cli): implement async file receive orchestrator and auto-pairing client
-
-* feat(ffi): build FFI library abstraction wrapper
-
-* chore(scripts): update installation scripts for Rust binary target and help subcommand
-
-* fix(engine): resolve pedantic and code-level clippy warnings
-
-* Refactor: relocate Rust codebase to root, polish CLI banner & colors, fix Clippy, and configure Android Termux build
-
-* Fix: Configure ALPN protocol 'hayate' for TLS handshake in server and client configurations
-
-* Refactor: Add --no-tui as alias to --no-progress, and support --peer option in send command for backward compatibility
-
-* Refactor: update ASCII art logo to new styling, and scale/color according to terminal screen size
-
-* feat: format
-
-* Create FUNDING.yml
-
-* fix: remove hot-loop clones, graceful compression fallback, better panic info, update docs for Rust
-
-* feat:Bump compio and refactor transfer pipeline
-
-* feat: Add CHANGELOG and changelog generator
-
-Add scripts/generate-changelog.sh to auto-generate CHANGELOG.md, add a
-justfile 'changelog' target, and update README to reference the
-changelog
+All notable changes to Hayate are documented in this file.
 
 ---
 
-Co-authored-by: copilot-swe-agent[bot] <198982749+Copilot@users.noreply.github.com> ([4636c1d9ecab6cacfece44d17e2c0c1bd3154e51](https://github.com/ShiinaSaku/Hayate/commit/4636c1d9ecab6cacfece44d17e2c0c1bd3154e51)) by 椎名 朔
+## [4.0.0] — 2026-06
 
-- Readme to reflect new cli changes ([493870945be43b0b38f67bf2c5a6d13638cc1774](https://github.com/ShiinaSaku/Hayate/commit/493870945be43b0b38f67bf2c5a6d13638cc1774)) by Saku Shiina
+### Added
+- **mDNS + UDP hybrid discovery** — peers are found via RFC 6762 mDNS (`_hayate._udp.local.`) with automatic UDP broadcast fallback. mDNS works on Android, iOS, macOS, Linux, and Windows without admin privileges.
+- **Hybrid broadcaster** (`start_broadcaster_hybrid`) — sender registers an mDNS service with TXT records (channel ID, OS, port) and simultaneously broadcasts UDP packets.
+- **Cross-platform terminal rendering** — Unicode box-drawing glyphs fall back to ASCII on Windows consoles and non-TTY environments. Progress bars auto-hide when stdout is piped.
 
-### ✦ Bug Fixes
+### Changed
+- **Discovery timeout** — receiver pairing extended from 30s to 60s; `discover` scan default from 3s to 15s.
+- **QUIC idle timeout** — raised from 60s to 300s to prevent spurious disconnects on slow links with very large files.
+- **Keep-alive interval** — reduced from 5s to 3s for faster dead-peer detection.
+- **UDP broadcast interval** — reduced from 1s to 800ms.
+- **Progress bar UX** — premium styling with spinner animation, right-aligned byte counts, colored speed tiers, compact ETA.
 
-- Installation script ([86a06162224302349d9d873f968fc9c39fffcd07](https://github.com/ShiinaSaku/Hayate/commit/86a06162224302349d9d873f968fc9c39fffcd07)) by 椎名 朔
-- _(CLI)_ List local IPs when bound to 0.0.0.0 ([e526d5b0487ae21c3413e3867fb178a149627538](https://github.com/ShiinaSaku/Hayate/commit/e526d5b0487ae21c3413e3867fb178a149627538)) by 椎名 朔
-- Format ([1eedf4158999909ab413142616904675c833fa61](https://github.com/ShiinaSaku/Hayate/commit/1eedf4158999909ab413142616904675c833fa61)) by Saku Shiina
+### Fixed
+- **Sender hang after transfer** — final `recv_stream.read()` now time-bounded at 10s, preventing indefinite stall when the receiver disappears.
+- **Receiver shutdown** — `send_stream.finish()` + 200ms grace period before `conn.close()` ensures the sender sees the stream close before the transport tears down.
+- **Ctrl+C exit** — replaced bare `process::exit` with a shared `Arc<AtomicBool>` cancellation flag propagated to all subcommands; 1.5s grace period for cleanup before force exit.
+- **Windows socket buffers** — tuned to 8MB on IOCP to avoid non-paged pool exhaustion.
 
-### ✦ Features
+### Removed
+- Legacy UDP-only discovery code; replaced by mDNS + UDP hybrid.
 
-- Fix performance ,tui and add ci ([0dfae05d4a824316dbabe0f84c307a9f1de0de40](https://github.com/ShiinaSaku/Hayate/commit/0dfae05d4a824316dbabe0f84c307a9f1de0de40)) by Saku Shiina
-- Update action versions ([2c0c6d0b610702f7b4a7e17009f8e0872b00df7f](https://github.com/ShiinaSaku/Hayate/commit/2c0c6d0b610702f7b4a7e17009f8e0872b00df7f)) by 椎名 朔
-- Feat(cli) : Improve user experience and add alias ([a357a22e433b3583011767eb6fefff573b50d379](https://github.com/ShiinaSaku/Hayate/commit/a357a22e433b3583011767eb6fefff573b50d379)) by Saku Shiina
-- _(engine)_ Implement dynamic cipher negotiation, buffer pool, and transport tuning ([0c920d8ac077798f34332806b48ba9b5d423b62a](https://github.com/ShiinaSaku/Hayate/commit/0c920d8ac077798f34332806b48ba9b5d423b62a)) by 椎名 朔
-- _(cli)_ Enhance transfer UI, progress indicators, and stage logging ([52b411834d7a6841a861aad453bf229ddad565a6](https://github.com/ShiinaSaku/Hayate/commit/52b411834d7a6841a861aad453bf229ddad565a6)) by 椎名 朔
+---
 
-### ✦ Maintenance & CI/CD
+## [3.0.0] — 2026-05
 
-- _(release)_ Configure git-cliff, SLSA attestations, and private package settings ([4767a7fc893d0bd396b9bbfe19b66aa1f68c0e84](https://github.com/ShiinaSaku/Hayate/commit/4767a7fc893d0bd396b9bbfe19b66aa1f68c0e84)) by 椎名 朔
+### Changed
+- Upgraded wire protocol to v5 with frame-level integrity checks.
+- Directory extraction rejects symlinks, hard links, and path traversal.
+- Improved metadata validation in handshake (`validate` before encode).
 
-### ✦ Refactoring & Code Quality
+### Fixed
+- Buffer pool memory leak when channel sender disconnects mid-transfer.
+- Transfer size mismatch detection on directory streams.
 
-- _(ffi)_ Adapt imports for renamed engine crate and set publish = false ([237c7194cd034204cd1892b8c254963d889ae7ca](https://github.com/ShiinaSaku/Hayate/commit/237c7194cd034204cd1892b8c254963d889ae7ca)) by 椎名 朔
+---
 
-## [1.0.0] - 2026-05-29
+## [2.0.0] — 2026-04
 
-### Other
+### Added
+- `discover` subcommand with 128-concurrent QUIC probes and real-time RTT measurement.
+- Pairing-code mode for sender/receiver LAN discovery without manual IP entry.
+- Zstd compression toggle (`-z`/`--compress`).
+- Hash algorithm selection (`--hash blake3|rapidhash|sha256`).
 
-- Intial commit ([0137bddedf4cf46fa4e1330ac60c4b30533dc1fe](https://github.com/ShiinaSaku/Hayate/commit/0137bddedf4cf46fa4e1330ac60c4b30533dc1fe)) by 椎名 朔
-- Release v2.0.0 "Add compression mode and ASCII TUI
+### Changed
+- Migrated runtime from tokio to compio (io_uring/IOCP/kqueue).
+- Transport from raw TCP+TLS to QUIC over compio-quic.
+- Buffer pool from `crossbeam` channels to `flume` for async compatibility.
 
-Switch CLI to pflag and add --compress (auto|always|never). Implement
-compression heuristics (ShouldCompress, NormalizeCompressionMode) and
-thread through compressMode into the transfer pipeline. Bump protocol/
-tool Version to 2.0.0 and add unit tests for compression and filename
-sanitization. Update TUI to use ASCII borders and include local address
-info. Add isAndroid detection for QUIC PMTU handling. Add release
-script,
-update .gitignore, remove bundled binaries, and add termenv/pflag deps." ([984d5ccaca263155ab451f208b704670942f0cac](https://github.com/ShiinaSaku/Hayate/commit/984d5ccaca263155ab451f208b704670942f0cac)) by 椎名 朔
+---
 
-- Delete .DS_Store ([a640bccecc7741527da3b7482d795d0e59dda839](https://github.com/ShiinaSaku/Hayate/commit/a640bccecc7741527da3b7482d795d0e59dda839)) by 椎名 朔
-<!-- generated by git-cliff -->
+## [1.0.0] — 2026-03
+
+### Added
+- Initial release with encrypted LAN file transfer.
+- X25519 + HKDF-SHA256 key exchange.
+- ChaCha20-Poly1305 and AES-256-GCM AEAD.
+- Tar-based directory transfer with path-traversal protection.
+- Direct IP transfer mode.
+- Progress bar with speed and ETA display.

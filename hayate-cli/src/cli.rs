@@ -109,7 +109,7 @@ pub struct SendArgs {
 #[derive(clap::Args, Debug)]
 pub struct DiscoverArgs {
     /// Network scan timeout in seconds.
-    #[arg(short, long, default_value_t = 3)]
+    #[arg(short, long, default_value_t = 15)]
     pub timeout: u64,
 
     /// Override the subnet CIDR to scan (e.g. 192.168.1.0/24).

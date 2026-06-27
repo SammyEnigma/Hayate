@@ -11,9 +11,7 @@ use std::time::Duration;
 use compio::io::AsyncRead;
 
 use crate::{
-    EngineError,
-    discovery::BroadcasterGuard,
-    network,
+    EngineError, network,
     protocol::{Metadata, TRANSFER_DIR, TRANSFER_FILE},
     transfer,
 };
@@ -146,14 +144,16 @@ impl HayateSender {
             let local_port = endpoint.local_addr()?.port();
 
             let phrase_clone = phrase.clone();
-            let (cancel_tx, cancel_rx) = flume::bounded(1);
-            let _broadcaster_guard = BroadcasterGuard::new(cancel_tx);
-            compio::runtime::spawn(async move {
-                let channel_id = crate::discovery::derive_channel_id(&phrase_clone);
-                let _ =
-                    crate::discovery::start_broadcaster(&channel_id, local_port, cancel_rx).await;
-            })
-            .detach();
+            let (_cancel_tx, cancel_rx) = flume::bounded(1);
+            let channel_id = crate::discovery::derive_channel_id(&phrase_clone);
+            let os_name = std::env::consts::OS.to_owned();
+            let _broadcaster_guard = crate::discovery::start_broadcaster_hybrid(
+                &channel_id,
+                local_port,
+                &os_name,
+                cancel_rx,
+            )
+            .map_err(|e| EngineError::Handshake(format!("broadcaster start failed: {e}")))?;
 
             let incoming = endpoint
                 .wait_incoming()
@@ -199,10 +199,15 @@ impl HayateSender {
 
         send_stream.finish()?;
 
-        // Wait for receiver to finish processing and close the connection
+        // Wait for the receiver to acknowledge completion with a time-bounded
+        // read. If the receiver has closed the connection, reading returns EOF
+        // or an error. The timeout prevents hanging if the receiver disappears.
         let drain_buf = vec![0u8; 1];
-        let compio::BufResult(res, _) = recv_stream.read(drain_buf).await;
-        let _ = res;
+        let _ = compio::time::timeout(
+            std::time::Duration::from_secs(10),
+            recv_stream.read(drain_buf),
+        )
+        .await;
 
         conn.close(0u32.into(), b"complete");
         Ok(checksum)
@@ -427,9 +432,8 @@ impl HayateReceiver {
         let (_endpoint, conn) = if let Some(phrase) = &self.code {
             let Some((_name, peer_addr, _os)) = crate::discovery::listen_for_broadcast(
                 Some(phrase.as_str()),
-                Duration::from_secs(30),
-            )
-            .await?
+                Duration::from_mins(1),
+            )?
             else {
                 return Err(EngineError::Handshake(
                     "Timed out waiting for sender broadcast".into(),

@@ -1,25 +1,24 @@
 ---
 title: Advanced Integration
-description: Learn how to integrate the hayate engine as a library dependency in your own Rust applications using compio.
+description: Embed the Hayate transfer engine as a Rust library dependency — builder API, buffer pooling, protocol-level control, and compio runtime integration.
 ---
 
 # Advanced Integration
 
-Hayate is designed as a modular Rust crate. In addition to the CLI application, the `hayate` engine can be embedded directly into other Rust applications needing completion-based QUIC transfers.
+The `hayate` crate is a modular Rust library. Embed it directly into your application for completion-based QUIC transfers with full control over networking, crypto, and I/O.
 
 ---
 
 ## Workspace Architecture
 
-The workspace is divided into two crates:
-- [hayate](https://github.com/ShiinaSaku/Hayate/tree/master/hayate): The core transfer engine library.
-- [hayate-cli](https://github.com/ShiinaSaku/Hayate/tree/master/hayate-cli): The command-line utility binary wrapping the engine.
+| Crate | Purpose |
+|-------|---------|
+| [`hayate`](https://github.com/ShiinaSaku/Hayate/tree/master/hayate) | Core engine: QUIC transport, crypto, streaming, discovery |
+| [`hayate-cli`](https://github.com/ShiinaSaku/Hayate/tree/master/hayate-cli) | CLI binary wrapping the engine |
 
 ---
 
-## Using `hayate` as a Library
-
-To embed the Hayate transfer engine, add `hayate` and `compio` to your `Cargo.toml`:
+## Adding the Dependency
 
 ```toml
 [dependencies]
@@ -27,9 +26,9 @@ hayate = "4.0"
 compio = { version = "0.19", features = ["macros", "runtime", "fs", "net", "time"] }
 ```
 
-### 1. Simple Receiver Example
+---
 
-The `HayateReceiver` builder constructs the listening server node, performs network pairing, and handles secure filesystem writes:
+## Receiver Example
 
 ```rust
 use std::net::SocketAddr;
@@ -41,29 +40,28 @@ async fn main() -> Result<(), hayate::EngineError> {
 
     let receiver = HayateReceiver::new()
         .bind(bind_addr)
-        .code("apple-bravo-charlie".to_owned()); // Enable pairing mode
+        .code("apple-bravo-charlie".to_owned());
 
-    // Receive the payload to the local "./downloads" directory
     let (checksum, output_path) = receiver.receive(
         "./downloads",
         |meta| {
-            println!("Incoming transfer: {} ({} bytes)", meta.filename, meta.total_size);
-            true // Return true to accept, false to reject
+            println!("Incoming: {} ({} bytes)", meta.filename, meta.total_size);
+            true
         },
         |bytes_received| {
-            println!("Received {} bytes", bytes_received);
-        }
+            println!("Received {bytes_received} bytes");
+        },
     ).await?;
 
-    println!("Saved payload to: {}", output_path.display());
-    println!("Validated hash: {}", checksum);
+    println!("Saved to {}", output_path.display());
+    println!("Checksum: {checksum}");
     Ok(())
 }
 ```
 
-### 2. Simple Sender Example
+---
 
-The `HayateSender` builder configures and initiates the file transmission:
+## Sender Example
 
 ```rust
 use std::net::SocketAddr;
@@ -75,39 +73,62 @@ async fn main() -> Result<(), hayate::EngineError> {
 
     let sender = HayateSender::new()
         .target(target_addr)
-        .compress(true) // Enable Zstd compression
-        .hash_algo("blake3".to_owned()); // Use Blake3 for integrity checks
+        .compress(true)
+        .hash_algo("blake3".to_owned());
 
     let checksum = sender.send(
         "./photos.zip",
         |bytes_sent| {
-            println!("Sent {} bytes", bytes_sent);
-        }
+            println!("Sent {bytes_sent} bytes");
+        },
     ).await?;
 
-    println!("Transfer complete! Validation checksum: {}", checksum);
+    println!("Done. Checksum: {checksum}");
     Ok(())
 }
 ```
 
 ---
 
-## Advanced API Reference
+## Buffer Pooling
 
-### Buffer Pool Management
+The hot path uses `BufferPool` to eliminate heap allocations:
 
-To achieve zero-heap-allocations in the hot path, the transfer engine uses the `BufferPool` thread-safe pool defined in `hayate::pool::BufferPool`.
+```rust
+use hayate::pool::BufferPool;
+use hayate::protocol::CHUNK_SIZE;
 
-- When sending data:
-  ```rust
-  let pool = BufferPool::new(32, CHUNK_SIZE);
-  let mut buffer = pool.lease().await;
-  // Use the buffer...
-  pool.release(buffer);
-  ```
-- Releasing a buffer automatically zeroes the capacity memory to prevent cryptographic leaks of plaintexts on the host.
+let pool = BufferPool::new(32, CHUNK_SIZE);
+let buf = pool.lease().await;
+// ... use buffer ...
+pool.release(buf);
+```
 
-### Memory & Task Safety
+Buffers are zeroed on release to prevent cryptographic plaintext leaks.
 
-- **Task Isolation**: Compression and encryption tasks are offloaded from the `compio` event loop thread to a dedicated CPU-bound OS thread pool.
-- **Auto-Cleanup**: The receiver uses a `FileCleanupGuard` RAII structure. If the stream disconnects or validation fails midway, the partially-written files are deleted automatically to avoid polluting the target system.
+---
+
+## Concurrency Model
+
+| Layer | Strategy |
+|-------|----------|
+| I/O | Single-thread compio event loop (io_uring / IOCP / kqueue) |
+| CPU-bound work | Dedicated OS thread pool (`std::thread::spawn`) per worker |
+| Transfer ordering | `BTreeMap`-based out-of-order frame reassembly |
+| Discovery | mDNS daemon thread + UDP broadcast task, background |
+
+---
+
+## Lower-Level API
+
+For protocol-level control, use these modules directly:
+
+| Module | Purpose |
+|--------|---------|
+| `hayate::transfer` | Handshake, consent, send/receive payload pipelines |
+| `hayate::protocol` | Wire constants, `Metadata` encode/decode, frame flags |
+| `hayate::crypto` | X25519, HKDF, AEAD sealing/opening |
+| `hayate::network` | QUIC endpoint binding, TLS config, transport params |
+| `hayate::discovery` | mDNS registration/browsing, UDP broadcast |
+| `hayate::tar` | Streaming tar pack/extract with path-traversal protection |
+| `hayate::error` | `EngineError` enum — all error variants |

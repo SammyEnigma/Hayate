@@ -51,6 +51,7 @@ socket2 = { workspace = true }
 
 # Compression, channels, and errors.
 flume = { workspace = true }
+mdns-sd = { workspace = true }
 zstd = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
