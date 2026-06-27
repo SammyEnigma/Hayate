@@ -82,7 +82,7 @@ pub fn build_transport_config() -> Arc<quinn_proto::TransportConfig> {
 
 /// Builds a `ServerConfig` for the receiver endpoint.
 pub fn server_config() -> Result<ServerConfig, EngineError> {
-    SERVER_CFG.get_or_init(|| {
+    let cfg = SERVER_CFG.get_or_init(|| {
         let (certs, key) = generate_self_signed().expect("failed to generate ephemeral TLS cert");
         let mut tls = rustls::ServerConfig::builder()
             .with_no_client_auth()
@@ -97,12 +97,12 @@ pub fn server_config() -> Result<ServerConfig, EngineError> {
 
         server_cfg
     });
-    Ok(SERVER_CFG.get().unwrap().clone())
+    Ok(cfg.clone())
 }
 
 /// Builds a `ClientConfig` that accepts any server certificate.
 pub fn client_config() -> Result<ClientConfig, EngineError> {
-    CLIENT_CFG.get_or_init(|| {
+    let cfg = CLIENT_CFG.get_or_init(|| {
         let mut tls = rustls::ClientConfig::builder()
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(SkipCertVerification))
@@ -116,7 +116,7 @@ pub fn client_config() -> Result<ClientConfig, EngineError> {
 
         client_cfg
     });
-    Ok(CLIENT_CFG.get().unwrap().clone())
+    Ok(cfg.clone())
 }
 
 /// Creates a QUIC listener endpoint bound to `addr`.

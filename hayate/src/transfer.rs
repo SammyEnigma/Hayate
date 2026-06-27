@@ -9,8 +9,9 @@
 //! is the buffer returned after the kernel is done with it.
 
 use futures_util::stream::{FuturesOrdered, StreamExt};
-use std::{collections::BTreeMap, io, path::Path, sync::Arc};
+use std::{collections::BTreeMap, io, path::Path, rc::Rc};
 
+use compio::buf::{IntoInner, IoBuf};
 use compio::io::{AsyncReadAt, AsyncReadExt, AsyncWriteAtExt, AsyncWriteExt};
 
 use crate::{
@@ -88,9 +89,14 @@ impl PayloadHasher {
     }
 
     fn finalize(self, algo: &str) -> String {
+        use std::fmt::Write;
         let hex_hash = match self {
             Self::Blake3(h) => h.finalize().to_hex().to_string(),
-            Self::RapidHash(h) => format!("{:016x}", h.finish()),
+            Self::RapidHash(h) => {
+                let mut s = String::with_capacity(17);
+                let _ = write!(s, "{:016x}", h.finish());
+                s
+            }
             Self::Sha256(h) => hex::encode(h.finish().as_ref()),
         };
         format!("{algo}${hex_hash}")
@@ -112,9 +118,10 @@ async fn read_exact_n<S: AsyncReadExt + Unpin>(
 async fn write_all_owned<S: AsyncWriteExt + Unpin>(
     stream: &mut S,
     data: Vec<u8>,
-) -> Result<(), EngineError> {
-    let compio::BufResult(result, _) = stream.write_all(data).await;
-    result.map_err(EngineError::Io)
+) -> Result<Vec<u8>, EngineError> {
+    let compio::BufResult(result, buf) = stream.write_all(data).await;
+    result.map_err(EngineError::Io)?;
+    Ok(buf)
 }
 
 /// Read a `u32` from the stream.
@@ -125,7 +132,9 @@ async fn read_u32<S: AsyncReadExt + Unpin>(stream: &mut S) -> Result<u32, Engine
 
 /// Write a `u32` to the stream.
 async fn write_u32<S: AsyncWriteExt + Unpin>(stream: &mut S, v: u32) -> Result<(), EngineError> {
-    write_all_owned(stream, v.to_be_bytes().to_vec()).await
+    write_all_owned(stream, v.to_be_bytes().to_vec())
+        .await
+        .map(|_| ())
 }
 
 // ---------------------------------------------------------------------------
@@ -425,7 +434,9 @@ pub async fn send_consent<S>(stream: &mut S, accept: bool) -> Result<(), EngineE
 where
     S: compio::io::AsyncWrite + Unpin,
 {
-    write_all_owned(stream, vec![u8::from(accept)]).await
+    write_all_owned(stream, vec![u8::from(accept)])
+        .await
+        .map(|_| ())
 }
 
 // ---------------------------------------------------------------------------
@@ -442,7 +453,7 @@ where
 ///
 /// Returns [`EngineError`] if reading from source, compressing, encrypting, or writing
 /// to the network fails.
-#[allow(clippy::arc_with_non_send_sync, clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub async fn send_payload<S>(
     key: &[u8; 32],
     cipher_id: u8,
@@ -479,6 +490,7 @@ where
     }
 
     let pool = crate::pool::BufferPool::new(32, CHUNK_SIZE);
+    let enc_pool = crate::pool::BufferPool::new(32, CHUNK_SIZE + 1024);
 
     let (chunk_tx, chunk_rx) =
         flume::bounded::<Result<(usize, Vec<u8>, usize, bool), io::Error>>(16);
@@ -494,8 +506,8 @@ where
 
         match source {
             PayloadSource::File { file, pos } => {
-                let file = Arc::new(file);
-                let read_future = |f: Arc<compio::fs::File>, buf: Vec<u8>, p: u64| async move {
+                let file = Rc::new(file);
+                let read_future = |f: Rc<compio::fs::File>, buf: Vec<u8>, p: u64| async move {
                     let compio::BufResult(result, buf) = f.read_at(buf, p).await;
                     (result, buf, p)
                 };
@@ -600,13 +612,14 @@ where
         .saturating_sub(1)
         .max(2);
 
-    let (result_tx, result_rx) = flume::bounded::<Result<(usize, Vec<u8>, usize), EngineError>>(16);
+    let (result_tx, result_rx) = flume::unbounded::<Result<(usize, Vec<u8>, usize), EngineError>>();
 
     for _ in 0..num_workers {
         let chunk_rx = chunk_rx.clone();
         let result_tx = result_tx.clone();
         let key = *key;
         let pool = pool.clone();
+        let enc_pool = enc_pool.clone();
         std::thread::spawn(move || {
             let aead_key = match crypto::AeadKey::new(&key, cipher_id) {
                 Ok(key) => key,
@@ -615,6 +628,7 @@ where
                     return;
                 }
             };
+            let mut plain_buf = Vec::with_capacity(CHUNK_SIZE + 256);
             while let Ok(res) = chunk_rx.recv() {
                 let (index, chunk, chunk_len, pooled) = match res {
                     Ok(val) => val,
@@ -625,35 +639,32 @@ where
                 };
 
                 let chunk_data = &chunk[..chunk_len];
-                let plain_frame: Vec<u8> = if do_compress {
+                plain_buf.clear();
+
+                if do_compress {
                     match zstd::encode_all(chunk_data, 1) {
                         Ok(compressed) if compressed.len() < chunk_len => {
-                            let mut pf = Vec::with_capacity(1 + compressed.len());
-                            pf.push(FRAME_ZSTD);
-                            pf.extend_from_slice(&compressed);
-                            pf
+                            plain_buf.push(FRAME_ZSTD);
+                            plain_buf.extend_from_slice(&compressed);
                         }
                         _ => {
-                            let mut pf = Vec::with_capacity(1 + chunk_len);
-                            pf.push(FRAME_RAW);
-                            pf.extend_from_slice(chunk_data);
-                            pf
+                            plain_buf.push(FRAME_RAW);
+                            plain_buf.extend_from_slice(chunk_data);
                         }
                     }
                 } else {
-                    let mut pf = Vec::with_capacity(1 + chunk_len);
-                    pf.push(FRAME_RAW);
-                    pf.extend_from_slice(chunk_data);
-                    pf
-                };
+                    plain_buf.push(FRAME_RAW);
+                    plain_buf.extend_from_slice(chunk_data);
+                }
 
                 if pooled {
                     pool.release(chunk);
                 }
 
-                let mut enc_buf = Vec::with_capacity(4 + 12 + plain_frame.len() + 16);
+                let mut enc_buf = enc_pool.lease_sync();
+                enc_buf.clear();
                 enc_buf.extend_from_slice(&[0u8; 4]); // placeholder for length
-                match crypto::encrypt_frame_with_key(&aead_key, &plain_frame, &mut enc_buf) {
+                match crypto::encrypt_frame_with_key(&aead_key, &plain_buf, &mut enc_buf) {
                     Ok(_) => {
                         let len = (enc_buf.len() - 4) as u32;
                         enc_buf[0..4].copy_from_slice(&len.to_be_bytes());
@@ -682,7 +693,8 @@ where
         let (index, frame, plaintext_len) = res?;
         pending.insert(index, (frame, plaintext_len));
         while let Some((frame, p_len)) = pending.remove(&next_index) {
-            write_all_owned(stream, frame).await?;
+            let written_frame = write_all_owned(stream, frame).await?;
+            enc_pool.release(written_frame);
             total += p_len as u64;
             progress_cb(total);
             next_index += 1;
@@ -713,6 +725,38 @@ where
 /// Returns [`EngineError`] if reading from stream, decrypting, decompressing, writing to
 /// target file/directory, or size validation fails.
 #[allow(clippy::too_many_arguments)]
+struct FileCleanupGuard<'a> {
+    path: &'a Path,
+    active: bool,
+}
+
+impl<'a> FileCleanupGuard<'a> {
+    fn new(path: &'a Path) -> Self {
+        Self { path, active: true }
+    }
+    fn disable(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for FileCleanupGuard<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = std::fs::remove_file(self.path);
+        }
+    }
+}
+
+/// Receives, decrypts, and extracts a payload from a stream, saving it to `output_path`.
+///
+/// Handles decryption, decompression (zstd), size validation, and safe path extraction
+/// for directory transfers.
+///
+/// # Errors
+///
+/// Returns [`EngineError`] if reading from stream, decrypting, decompressing, writing to
+/// target file/directory, or size validation fails.
+#[allow(clippy::too_many_arguments)]
 pub async fn receive_payload<S>(
     key: &[u8; 32],
     cipher_id: u8,
@@ -732,19 +776,28 @@ where
         )));
     }
 
+    let pool = crate::pool::BufferPool::new(32, CHUNK_SIZE + 1024);
+    let plain_pool = crate::pool::BufferPool::new(32, CHUNK_SIZE);
+
     let (tx, rx) = flume::bounded::<Vec<u8>>(8);
 
     let extract_handle = if transfer_type == TRANSFER_DIR {
         let out = output_path.to_path_buf();
+        let pool_clone = plain_pool.clone();
         Some(std::thread::spawn(move || -> Result<(), EngineError> {
             struct ChanReader {
                 rx: flume::Receiver<Vec<u8>>,
                 buf: Vec<u8>,
                 pos: usize,
+                pool: crate::pool::BufferPool,
             }
             impl io::Read for ChanReader {
                 fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
                     while self.pos >= self.buf.len() {
+                        let old_buf = std::mem::take(&mut self.buf);
+                        if !old_buf.is_empty() {
+                            self.pool.release(old_buf);
+                        }
                         match self.rx.recv() {
                             Ok(chunk) => {
                                 self.buf = chunk;
@@ -759,11 +812,23 @@ where
                     Ok(n)
                 }
             }
+            impl Drop for ChanReader {
+                fn drop(&mut self) {
+                    let old_buf = std::mem::take(&mut self.buf);
+                    if !old_buf.is_empty() {
+                        self.pool.release(old_buf);
+                    }
+                    while let Ok(buf) = self.rx.try_recv() {
+                        self.pool.release(buf);
+                    }
+                }
+            }
             crate::tar::extract_tar_sync(
                 ChanReader {
                     rx,
                     buf: Vec::new(),
                     pos: 0,
+                    pool: pool_clone,
                 },
                 &out,
             )
@@ -772,17 +837,19 @@ where
         None
     };
 
+    let mut cleanup_guard = None;
     let mut sink = if transfer_type == TRANSFER_FILE {
         let f = compio::fs::File::create(output_path)
             .await
             .map_err(EngineError::Io)?;
+        cleanup_guard = Some(FileCleanupGuard::new(output_path));
         PayloadSink::File { file: f, pos: 0 }
     } else {
         PayloadSink::Channel(tx)
     };
 
     let (enc_tx, enc_rx) = flume::bounded::<Result<(usize, Vec<u8>), io::Error>>(16);
-    let (plain_tx, plain_rx) = flume::bounded::<Result<(usize, Vec<u8>), EngineError>>(16);
+    let (plain_tx, plain_rx) = flume::unbounded::<Result<(usize, Vec<u8>), EngineError>>();
 
     // Decrypt/decompress workers: isolate CPU-bound tasks in a worker pool.
     let num_workers = std::thread::available_parallelism()
@@ -794,6 +861,8 @@ where
         let enc_rx = enc_rx.clone();
         let plain_tx = plain_tx.clone();
         let key = *key;
+        let pool_clone = pool.clone();
+        let plain_pool_clone = plain_pool.clone();
         std::thread::spawn(move || {
             let aead_key = match crypto::AeadKey::new(&key, cipher_id) {
                 Ok(key) => key,
@@ -811,7 +880,11 @@ where
                         break;
                     }
                 };
-                match crypto::decrypt_frame_into_with_key(&aead_key, &enc, &mut decrypted_buf) {
+                let decrypt_res =
+                    crypto::decrypt_frame_into_with_key(&aead_key, &enc, &mut decrypted_buf);
+                pool_clone.release(enc);
+
+                match decrypt_res {
                     Ok(()) => {
                         if decrypted_buf.is_empty() {
                             let _ = plain_tx.send(Err(EngineError::InvalidFrame(
@@ -822,7 +895,12 @@ where
                         let flag = decrypted_buf[0];
                         let data = &decrypted_buf[1..];
                         let plaintext_res: Result<Vec<u8>, EngineError> = match flag {
-                            FRAME_RAW => Ok(data.to_vec()),
+                            FRAME_RAW => {
+                                let mut plain = plain_pool_clone.lease_sync();
+                                plain.resize(data.len(), 0);
+                                plain.copy_from_slice(data);
+                                Ok(plain)
+                            }
                             FRAME_ZSTD => zstd::decode_all(data)
                                 .map_err(|e| EngineError::Compression(e.to_string())),
                             other => Err(EngineError::InvalidFrame(format!(
@@ -854,6 +932,7 @@ where
 
     // Writer task: reorder, hash, and persist plaintext after validation.
     let algo = hash_algo.to_owned();
+    let plain_pool_clone = plain_pool.clone();
     let write_handle = compio::runtime::spawn(async move {
         let mut hasher = PayloadHasher::new(&algo);
         let mut total: u64 = 0;
@@ -872,9 +951,11 @@ where
 
                 match &mut sink {
                     PayloadSink::File { file, pos: _ } => {
-                        let compio::BufResult(result, _) = file.write_all_at(plaintext, pos).await;
+                        let compio::BufResult(result, buffer) =
+                            file.write_all_at(plaintext, pos).await;
                         result.map_err(EngineError::Io)?;
                         pos += plaintext_len;
+                        plain_pool_clone.release(buffer);
                     }
                     PayloadSink::Channel(tx) => {
                         tx.send_async(plaintext).await.map_err(|_| {
@@ -941,9 +1022,10 @@ where
     // Network reader loop: each frame is length-prefixed.
     let mut read_error = None;
     let mut current_index = 0;
+    let mut len_buf_owned = vec![0u8; 4];
     loop {
-        let len_buf_owned = vec![0u8; 4];
         let compio::BufResult(result, len_buf) = stream.read_exact(len_buf_owned).await;
+        len_buf_owned = len_buf;
         match result {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
@@ -952,8 +1034,12 @@ where
                 break;
             }
         }
-        let frame_len =
-            u32::from_be_bytes([len_buf[0], len_buf[1], len_buf[2], len_buf[3]]) as usize;
+        let frame_len = u32::from_be_bytes([
+            len_buf_owned[0],
+            len_buf_owned[1],
+            len_buf_owned[2],
+            len_buf_owned[3],
+        ]) as usize;
 
         if frame_len == 0 || frame_len > (16 * 1024 * 1024) {
             read_error = Some(io::Error::new(
@@ -963,8 +1049,11 @@ where
             break;
         }
 
-        let enc_owned = vec![0u8; frame_len];
-        let compio::BufResult(result, enc) = stream.read_exact(enc_owned).await;
+        let mut enc_owned = pool.lease().await;
+        enc_owned.resize(frame_len, 0);
+        let compio::BufResult(result, enc_sliced) =
+            stream.read_exact(enc_owned.slice(0..frame_len)).await;
+        let enc = enc_sliced.into_inner();
         match result {
             Ok(()) => {
                 if enc_tx.send_async(Ok((current_index, enc))).await.is_err() {
@@ -990,6 +1079,10 @@ where
             "receive writer task failed: {e:?}"
         )))
     })??;
+
+    if let Some(mut guard) = cleanup_guard {
+        guard.disable();
+    }
     Ok(hash)
 }
 

@@ -1,22 +1,34 @@
-# ⚡️ Hayate Engine
+<p align="center">
+  <img src="../assets/logo.svg" width="140" height="140" alt="Hayate Logo">
+</p>
 
-[![Crates.io](https://img.shields.io/crates/v/hayate.svg)](https://crates.io/crates/hayate)
-[![Documentation](https://docs.rs/hayate/badge.svg)](https://docs.rs/hayate)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](../LICENSE)
+<h1 align="center">Hayate Engine</h1>
+
+<p align="center">
+  <strong>Standalone high-performance completion-based transfer engine powering the Hayate CLI.</strong>
+</p>
+
+<p align="center">
+  <a href="https://crates.io/crates/hayate"><img src="https://img.shields.io/crates/v/hayate.svg" alt="Crates.io"></a>
+  <a href="https://docs.rs/hayate"><img src="https://docs.rs/hayate/badge.svg" alt="Documentation"></a>
+  <a href="../LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+</p>
+
+---
 
 `hayate` is the high-performance transfer engine powering the Hayate CLI. It provides high-level `HayateSender` and `HayateReceiver` builders for encrypted file and directory transfers over QUIC, plus low-level modules for apps needing custom protocol control.
 
 Driven by `compio` (an `io_uring`/IOCP runtime) and `compio-quic`, Hayate achieves blazing fast throughput utilizing a multi-threaded AEAD and Zstd pipeline, ephemeral X25519 key agreements, dynamic payload hashing (`blake3`, `rapidhash`, `sha256`), and safe `tar` streaming.
 
-## 📥 Installation
+## Installation
 
 ```toml
 [dependencies]
-hayate = "2.2"
+hayate = "3.0"
 compio = { version = "0.19", features = ["macros", "runtime", "fs", "net", "time"] }
 ```
 
-## 🎯 Receive API
+## Receive API
 
 ```rust
 use std::net::SocketAddr;
@@ -36,13 +48,14 @@ async fn main() -> Result<(), hayate::EngineError> {
         |bytes| println!("Received {bytes} bytes"),
     ).await?;
 
+    // Saved payload info
     println!("Saved to {}", path.display());
     println!("Checksum: {checksum}");
     Ok(())
 }
 ```
 
-## 🚀 Send API
+## Send API
 
 ```rust
 use std::net::SocketAddr;
@@ -64,7 +77,7 @@ async fn main() -> Result<(), hayate::EngineError> {
 }
 ```
 
-## 🤝 Pairing Mode
+## Pairing Mode
 
 Discover peers across the LAN via UDP broadcasts. The code phrase doubles as the HKDF salt.
 
@@ -89,9 +102,10 @@ let (_checksum, _path) = HayateReceiver::new()
 # }
 ```
 
-_Note: Android devices and VPNs often block broadcasts. Fallback to direct IP mode when necessary._
+> [!NOTE]
+> Android devices and VPNs often block broadcasts. Fallback to direct IP mode when necessary.
 
-## 🗺️ Module Architecture
+## Module Architecture
 
 | Module       | Purpose                                                                      |
 | ------------ | ---------------------------------------------------------------------------- |
@@ -105,17 +119,17 @@ _Note: Android devices and VPNs often block broadcasts. Fallback to direct IP mo
 | `local_addr` | Network interface and subnet utilities.                                      |
 | `error`      | Defines `EngineError`.                                                       |
 
-## ⚙️ Runtime Notes
+## Runtime Notes
 
-`compio` uses completion-based I/O. Buffers must be _owned_ and passed by value to I/O operations (returning via `compio::BufResult`).
+`compio` uses completion-based I/O. Buffers must be owned and passed by value to I/O operations (returning via `compio::BufResult`).
 
 Hayate isolates blocking logic (`tar` extraction) and heavy CPU tasks (`zstd` / AEAD) off the executor using dedicated worker threads (`std::thread::spawn`) and `flume` channels. A `BTreeMap` handles chunk reordering on the receiver to guarantee sequential disk writes.
 
-## 🛡️ Safety Guarantees
+## Safety Guarantees
 
 Hayate treats network data as fundamentally hostile:
 
-- **Encrypted Metadata:** Filename, size, and hashing choices are authenticated before prompting the user.
-- **Strict Framing:** Frames are length-capped and verified via AEAD before decompression.
-- **Size Verification:** Completed file sizes must match the exact announced byte count.
-- **Path Sanitization:** Directory unpacking rigorously prevents absolute paths, `..` traversals, symlinks, and hard links.
+- **Encrypted Metadata**: Filename, size, and hashing choices are authenticated before prompting the user.
+- **Strict Framing**: Frames are length-capped and verified via AEAD before decompression.
+- **Size Verification**: Completed file sizes must match the exact announced byte count.
+- **Path Sanitization**: Directory unpacking rigorously prevents absolute paths, parent directory traversals (`..`), symlinks, and hard links.

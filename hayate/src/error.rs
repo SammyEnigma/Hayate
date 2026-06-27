@@ -4,6 +4,7 @@ use thiserror::Error;
 
 /// Top-level error type for the engine.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum EngineError {
     /// An underlying I/O error occurred (e.g. file system or socket issues).
     #[error("I/O error: {0}")]
@@ -28,7 +29,7 @@ pub enum EngineError {
 
     /// An error occurred during cryptographic operations (e.g. encryption/decryption/HKDF).
     #[error("crypto error: {0}")]
-    Crypto(String),
+    Crypto(&'static str),
 
     /// An invalid frame structure or size was encountered on the stream.
     #[error("invalid frame: {0}")]
@@ -38,9 +39,25 @@ pub enum EngineError {
     #[error("handshake error: {0}")]
     Handshake(String),
 
-    /// An error occurred in the underlying QUIC transport or endpoint.
-    #[error("QUIC error: {0}")]
-    Quic(String),
+    /// An error occurred during client connection initiation.
+    #[error("QUIC connect error: {0}")]
+    Connect(#[from] compio_quic::ConnectError),
+
+    /// An error occurred on the active QUIC connection.
+    #[error("QUIC connection error: {0}")]
+    Connection(#[from] compio_quic::ConnectionError),
+
+    /// An error occurred when opening a stream on the QUIC connection.
+    #[error("QUIC open stream error: {0}")]
+    OpenStream(#[from] compio_quic::OpenStreamError),
+
+    /// An error occurred during writing to the stream.
+    #[error("QUIC write error: {0}")]
+    Write(#[from] compio_quic::WriteError),
+
+    /// An error occurred because the stream was already closed.
+    #[error("QUIC stream closed error: {0}")]
+    ClosedStream(#[from] compio_quic::ClosedStream),
 
     /// An error occurred during payload compression or decompression.
     #[error("compression error: {0}")]
@@ -49,8 +66,4 @@ pub enum EngineError {
     /// An archive entry attempted path traversal outside the output directory.
     #[error("path traversal attack detected in archive entry")]
     PathTraversal,
-
-    /// An unspecified error captured via `anyhow`.
-    #[error(transparent)]
-    Other(#[from] anyhow::Error),
 }

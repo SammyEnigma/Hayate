@@ -1,3 +1,5 @@
+//! Build script for Hayate CLI.
+
 use std::process::Command;
 
 fn main() {
@@ -12,10 +14,9 @@ fn main() {
                 None
             }
         })
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+        .map_or_else(|| "unknown".to_string(), |s| s.trim().to_string());
 
-    println!("cargo:rustc-env=GIT_COMMIT_HASH={}", commit);
+    println!("cargo:rustc-env=GIT_COMMIT_HASH={commit}");
     println!("cargo:rerun-if-changed=.git/HEAD");
 
     let version = Command::new("git")
@@ -29,18 +30,18 @@ fn main() {
                 None
             }
         })
-        .map(|s| {
-            let mut val = s.trim().to_string();
-            if val.starts_with('v') {
-                val.remove(0);
-            }
-            val
-        })
-        .unwrap_or_else(|| {
-            std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "unknown".to_string())
-        });
+        .map_or_else(
+            || std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "unknown".to_string()),
+            |s| {
+                let mut val = s.trim().to_string();
+                if val.starts_with('v') {
+                    val.remove(0);
+                }
+                val
+            },
+        );
 
-    println!("cargo:rustc-env=GIT_VERSION={}", version);
+    println!("cargo:rustc-env=GIT_VERSION={version}");
 
     let ref_path = Command::new("git")
         .args(["symbolic-ref", "HEAD"])

@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use hayate::{
     local_addr, network,
     protocol::{Metadata, TRANSFER_DIR},
@@ -27,7 +27,7 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
             Some(s)
         };
         let peer_addr = match hayate::discovery::listen_for_broadcast(
-            Some(code.clone()),
+            Some(code.as_str()),
             Duration::from_secs(30),
         )
         .await?
@@ -58,7 +58,9 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
         };
         let conn_result: Result<_> =
             match endpoint.connect(peer_addr, "hayate.local", Some(client_config)) {
-                Ok(connecting) => connecting.await.map_err(Into::into),
+                Ok(connecting) => connecting
+                    .await
+                    .context("Failed to establish QUIC connection to the sender"),
                 Err(e) => Err(e.into()),
             };
         if let Some(spinner) = &spinner {
@@ -69,7 +71,10 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
         let peer = conn.remote_address();
         output::ok(&format!("Connected to {peer}"));
 
-        let (mut send_stream, mut recv_stream) = conn.accept_bi().await?;
+        let (mut send_stream, mut recv_stream) = conn
+            .accept_bi()
+            .await
+            .context("Failed to accept bidirectional streams from sender")?;
 
         // ── Handshake ────────────────────────────────────────────────
         output::stage("handshake", "negotiating cipher…");
@@ -78,7 +83,8 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
             &mut recv_stream,
             Some(code.as_str()),
         )
-        .await?;
+        .await
+        .context("Handshake cipher negotiation failed")?;
 
         // ── Transfer offer card ──────────────────────────────────────
         let kind = if meta.transfer_type == TRANSFER_DIR {
@@ -102,7 +108,9 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
         };
 
         let accept = dest.is_some();
-        transfer::send_consent_write(&mut send_stream, accept).await?;
+        transfer::send_consent_write(&mut send_stream, accept)
+            .await
+            .context("Failed to send transfer acceptance to peer")?;
         if !accept {
             output::warn("Transfer rejected.");
             conn.close(0u32.into(), b"rejected");
@@ -137,7 +145,8 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
                 }
             },
         )
-        .await;
+        .await
+        .context("File transfer failed during payload delivery");
 
         if let Some(pb) = &pb {
             output::finish_transfer_progress(pb, meta.total_size);
@@ -320,6 +329,65 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
 // Helpers
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
+struct DirCompleter;
+
+impl inquire::Autocomplete for DirCompleter {
+    fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, inquire::CustomUserError> {
+        let path = std::path::Path::new(input);
+        let (dir_path, prefix) = if input.ends_with('/') || input.is_empty() {
+            (path, "")
+        } else {
+            (
+                path.parent().unwrap_or_else(|| std::path::Path::new("")),
+                path.file_name().and_then(|s| s.to_str()).unwrap_or(""),
+            )
+        };
+
+        let dir_to_read = if dir_path.as_os_str().is_empty() {
+            std::path::Path::new(".")
+        } else {
+            dir_path
+        };
+
+        let mut suggestions = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(dir_to_read) {
+            for entry in entries.flatten() {
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                if !file_type.is_dir() {
+                    continue;
+                }
+                let name = entry.file_name();
+                let Some(name_str) = name.to_str() else {
+                    continue;
+                };
+                if !name_str.starts_with(prefix) {
+                    continue;
+                }
+
+                let full_path = dir_path.join(name_str);
+                let mut path_str = full_path.to_string_lossy().into_owned();
+                if !path_str.ends_with('/') {
+                    path_str.push('/');
+                }
+                suggestions.push(path_str);
+            }
+        }
+
+        Ok(suggestions)
+    }
+
+    fn get_completion(
+        &mut self,
+        _input: &str,
+        highlighted_suggestion: Option<String>,
+    ) -> Result<inquire::autocompletion::Replacement, inquire::CustomUserError> {
+        Ok(highlighted_suggestion)
+    }
+}
+
 fn prompt_accept(
     meta: &Metadata,
     peer: SocketAddr,
@@ -337,15 +405,26 @@ fn prompt_accept(
         output::format_bytes(meta.total_size)
     );
 
-    if dialoguer::Confirm::new()
-        .with_prompt(prompt)
-        .default(false)
-        .interact()?
-    {
-        let dest_dir: String = dialoguer::Input::new()
-            .with_prompt("   Save to directory")
-            .default(default_dir.to_string_lossy().into_owned())
-            .interact_text()?;
+    let accept = match inquire::Confirm::new(&prompt).with_default(false).prompt() {
+        Ok(val) => val,
+        Err(inquire::InquireError::OperationInterrupted) => {
+            std::process::exit(130);
+        }
+        Err(e) => return Err(anyhow::anyhow!(e)),
+    };
+
+    if accept {
+        let dest_dir = match inquire::Text::new("   Save to directory")
+            .with_default(&default_dir.to_string_lossy())
+            .with_autocomplete(DirCompleter)
+            .prompt()
+        {
+            Ok(val) => val,
+            Err(inquire::InquireError::OperationInterrupted) => {
+                std::process::exit(130);
+            }
+            Err(e) => return Err(anyhow::anyhow!(e)),
+        };
 
         let dest = PathBuf::from(dest_dir);
         let name = std::path::Path::new(&meta.filename)

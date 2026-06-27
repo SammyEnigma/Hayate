@@ -13,19 +13,22 @@ keywords = ["quic", "transfer", "cli", "lan", "utility"]
 categories = ["command-line-utilities", "network-programming"]
 publish = false
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "hayate"
 path = "src/main.rs"
 
 [dependencies]
-hayate = { path = "../hayate-engine", version = "3.0.0" }
+hayate = { path = "../hayate", version = "3.0.0" }
 anyhow = { workspace = true }
-clap = { version = "4", features = ["color", "derive", "env"] }
+clap = { workspace = true }
 compio = { workspace = true }
 compio-quic = { workspace = true }
-console = "0.16"
-dialoguer = { workspace = true }
-flume = "0.12.0"
+console = { workspace = true }
+inquire = { workspace = true }
+flume = { workspace = true }
 futures-util = { workspace = true }
-indicatif = { version = "0.18", features = ["improved_unicode"] }
+indicatif = { workspace = true }
 rand = { workspace = true }

@@ -9,6 +9,13 @@ on:
       tag:
         description: "Release tag (e.g. v1.2.3)"
         required: true
+        type: string
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v1.2.3)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -55,19 +62,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc # v2.9.1
 
       - name: Install Zig
         if: matrix.use_zigbuild
-        uses: goto-bus-stop/setup-zig@v2
+        uses: goto-bus-stop/setup-zig@abea47f85e598557f500fa1fd2ab7464fcb39406 # v2.2.1
 
       - name: Install cargo-zigbuild
         if: matrix.use_zigbuild
@@ -75,7 +84,7 @@ jobs:
 
       - name: Set up NDK (Android)
         if: matrix.is_android
-        uses: nttld/setup-ndk@v1
+        uses: nttld/setup-ndk@aacaf74664d0f8e1b070a865acb47ee25007386d # v1.6.0
         id: setup-ndk
         with:
           ndk-version: r29
@@ -116,6 +125,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
 
       - name: Download all artifacts
@@ -133,8 +143,8 @@ jobs:
           subject-path: "target/artifacts/*"
 
       - name: Upload Binaries to Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@2bb465e97f322d3cb2a965294d483e0d26a67aa9 # v3.0.1
         with:
-          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          tag_name: ${{ inputs.tag || github.ref_name }}
           files: target/artifacts/*
           fail_on_unmatched_files: true

@@ -43,23 +43,21 @@ pub fn print_banner() {
     let term = console::Term::stdout();
     let width = term.size_checked().map(|(_, w)| w).unwrap_or(80);
 
-    if width >= 65 {
+    if width >= 45 {
         let logo = r#"
-  __   __     _____    __  __    _____    _______     _____  
- /\_\ /_/\   /\___/\ /\  /\  /\ /\___/\ /\_______)\  /\_____\ 
-( ( (_) ) ) / / _ \ \\ \ \/ / // / _ \ \\(___  __\/( (_____/ 
- \ \___/ /  \ \(_)/ / \ \__/ / \ \(_)/ /  / / /     \ \__\   
- / / _ \ \  / / _ \ \  \__/ /  / / _ \ \ ( ( (      / /__/_  
-( (_( )_) )( (_( )_) ) / / /  ( (_( )_) ) \ \ \    ( (_____ \ 
- \/_/ \_\/  \/_/ \_\/  \/_/    \/_/ \_\/  /_/_/     \/_____/ 
+    __  _______  _____  ____________
+   / / / /   \ \/ /   |/_  __/ ____/
+  / /_/ / /| |\  / /| | / / / __/   
+ / __  / ___ |/ / ___ |/ / / /___   
+/_/ /_/_/  |_/_/_/  |_/_/ /_____/   
 "#;
         println!("{}", style(logo).bold().cyan());
     } else {
         let logo = r#"
-  _  _  _  _  _  _ ___ ___ 
- | || |/ _ \| || / _ \ | | 
- | __ | (_) \  / | (_) | | 
- |_||_|\___/ \/   \___/|_| 
+ _  _   ___   ___ _____ ___ 
+| || | /_\ \ / /_\_   _| __|
+| __ |/ _ \ V / _ \| | | _| 
+|_||_/_/ \_\_/_/ \_\_| |___|
 "#;
         println!("{}", style(logo).bold().cyan());
     }
@@ -102,6 +100,24 @@ pub fn warn(msg: &str) {
 
 pub fn err(msg: &str) {
     eprintln!("   {}  {}", style(ICON_ERR).bold().red(), style(msg).red());
+}
+
+pub fn print_error(err: &anyhow::Error) {
+    let mut chain = err.chain();
+    if let Some(top_err) = chain.next() {
+        eprintln!(
+            "   {}  {}",
+            style(ICON_ERR).bold().red(),
+            style(top_err.to_string()).bold().red()
+        );
+    }
+    for cause in chain {
+        eprintln!(
+            "      {} {}",
+            style("└─").dim(),
+            style(cause.to_string()).dim()
+        );
+    }
 }
 
 pub fn stage(name: &str, detail: impl std::fmt::Display) {
@@ -174,7 +190,7 @@ pub fn pairing_code(code: &str, command: &str) {
     );
     println!(
         "   {}{}{}",
-        style(BOX_TL).dim().for_stderr(),
+        style(BOX_BL).dim(),
         style(box_line(inner_width)).dim(),
         style(BOX_BR).dim()
     );
@@ -353,6 +369,24 @@ pub fn scan_progress_bar(total_hosts: u64) -> ProgressBar {
 // Peer discovery table
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Prints a single-line live notification when a peer is discovered.
+pub fn peer_found_live(
+    name: &str,
+    addr: &std::net::SocketAddr,
+    os: &str,
+    rtt: &str,
+    quality: &str,
+) {
+    println!(
+        "   {} {}  {} {}  {}",
+        style(quality).green(),
+        style(name).white().bold(),
+        style(addr).green(),
+        style(os).dim(),
+        style(rtt).dim(),
+    );
+}
+
 pub fn print_peer_table(peers: &[(String, std::net::SocketAddr, String)]) {
     if peers.is_empty() {
         warn("No peers found on the network.");
@@ -390,8 +424,9 @@ pub fn print_peer_table(peers: &[(String, std::net::SocketAddr, String)]) {
     // Rows
     for (idx, (name, addr, os)) in peers.iter().enumerate() {
         let num = format!("{}", idx + 1);
-        let name_display = if name.len() > 20 {
-            format!("{}…", &name[..19])
+        let name_len = name.chars().count();
+        let name_display = if name_len > 20 {
+            format!("{}…", name.chars().take(19).collect::<String>())
         } else {
             name.clone()
         };
@@ -532,8 +567,11 @@ fn color_speed(bytes_per_sec: u64, display: &str) -> String {
 }
 
 fn truncate_checksum(checksum: &str) -> String {
-    if checksum.len() > 16 {
-        format!("{}…{}", &checksum[..8], &checksum[checksum.len() - 8..])
+    let chars: Vec<char> = checksum.chars().collect();
+    if chars.len() > 16 {
+        let first_part: String = chars[..8].iter().collect();
+        let last_part: String = chars[chars.len() - 8..].iter().collect();
+        format!("{}…{}", first_part, last_part)
     } else {
         checksum.to_owned()
     }

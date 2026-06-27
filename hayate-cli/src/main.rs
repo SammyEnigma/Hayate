@@ -1,3 +1,5 @@
+//! Hayate CLI application.
+
 mod cli;
 mod output;
 mod subcmd;
@@ -49,5 +51,20 @@ fn main() -> Result<()> {
 
     // compio thread-per-core runtime: single OS thread, one io_uring /
     // IOCP / kqueue completion queue, no work-stealing scheduler.
-    compio::runtime::Runtime::new()?.block_on(subcmd::dispatch(cli))
+    let runtime = compio::runtime::Runtime::new()?;
+    runtime.block_on(async {
+        compio::runtime::spawn(async {
+            if compio::signal::ctrl_c().await.is_ok() {
+                std::process::exit(130);
+            }
+        })
+        .detach();
+
+        let res = subcmd::dispatch(cli).await;
+        if let Err(err) = res {
+            output::print_error(&err);
+            std::process::exit(1);
+        }
+        Ok(())
+    })
 }

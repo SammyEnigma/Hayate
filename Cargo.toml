@@ -1,5 +1,5 @@
 [workspace]
-members = ["hayate-engine", "hayate-cli"]
+members = ["hayate", "hayate-cli"]
 resolver = "2"
 
 [workspace.package]
@@ -8,11 +8,11 @@ edition = "2024"
 authors = ["ShiinaSaku"]
 license = "MIT"
 repository = "https://github.com/ShiinaSaku/Hayate"
-rust-version = "1.95"
+rust-version = "1.96"
 
 [workspace.dependencies]
 # Completion-based async I/O and QUIC.
-compio = { version = "0.19.1", features = ["fs", "macros", "net", "runtime", "time"] }
+compio = { version = "0.19.1", features = ["fs", "macros", "net", "runtime", "time", "signal"] }
 compio-quic = { version = "0.8.0", default-features = false, features = ["ring"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 
@@ -39,15 +39,40 @@ thiserror = "2"
 hex = "0.4"
 blake3 = "1.8"
 rapidhash = "4"
-dialoguer = "0.12"
+inquire = { version = "0.9.4", default-features = false, features = ["crossterm"] }
+tar = "0.4"
+walkdir = "2"
+get_if_addrs = "0.5.3"
+local-ip-address = "0.6.13"
+flume = "0.12.0"
+clap = { version = "4", features = ["color", "derive", "env"] }
+console = "0.16"
+indicatif = { version = "0.18", features = ["improved_unicode"] }
+
+[workspace.lints.rust]
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+correctness = "deny"
+suspicious = "warn"
+style = "warn"
+complexity = "warn"
+perf = "warn"
 
 [profile.release]
 opt-level = 3
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 panic = "abort"
-strip = "symbols"
+strip = true
 
 [profile.release-full]
 inherits = "release"
-lto = "fat"
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.dev.package."*"]
+opt-level = 3
+

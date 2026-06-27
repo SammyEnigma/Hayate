@@ -11,7 +11,9 @@ use std::time::Duration;
 use compio::io::AsyncRead;
 
 use crate::{
-    EngineError, network,
+    EngineError,
+    discovery::BroadcasterGuard,
+    network,
     protocol::{Metadata, TRANSFER_DIR, TRANSFER_FILE},
     transfer,
 };
@@ -127,43 +129,41 @@ impl HayateSender {
         let (meta, _) = self.build_metadata(path)?;
 
         // Establish the QUIC connection
-        let conn = if let Some(target_addr) = self.target {
+        let (_endpoint, conn) = if let Some(target_addr) = self.target {
             let endpoint = network::bind_client().await?;
             let client_cfg = network::client_config()?;
-            let connecting = endpoint
-                .connect(target_addr, "hayate.local", Some(client_cfg))
-                .map_err(|e| EngineError::Quic(e.to_string()))?;
-            connecting
-                .await
-                .map_err(|e| EngineError::Quic(e.to_string()))?
+            let connecting = endpoint.connect(target_addr, "hayate.local", Some(client_cfg))?;
+            let conn = connecting.await?;
+            (endpoint, conn)
         } else {
             let phrase = self.code.as_ref().ok_or_else(|| {
                 EngineError::Handshake("Neither target nor code specified".into())
             })?;
 
-            let bind_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
+            let bind_addr =
+                SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 0);
             let endpoint = network::bind_server(bind_addr).await?;
             let local_port = endpoint.local_addr()?.port();
 
             let phrase_clone = phrase.clone();
+            let (cancel_tx, cancel_rx) = flume::bounded(1);
+            let _broadcaster_guard = BroadcasterGuard::new(cancel_tx);
             compio::runtime::spawn(async move {
                 let channel_id = crate::discovery::derive_channel_id(&phrase_clone);
-                let _ = crate::discovery::start_broadcaster(channel_id, local_port).await;
+                let _ =
+                    crate::discovery::start_broadcaster(&channel_id, local_port, cancel_rx).await;
             })
             .detach();
 
             let incoming = endpoint
                 .wait_incoming()
                 .await
-                .ok_or_else(|| EngineError::Quic("Endpoint closed during pairing".into()))?;
-            incoming
-                .await
-                .map_err(|e| EngineError::Quic(e.to_string()))?
+                .ok_or_else(|| EngineError::Handshake("Endpoint closed during pairing".into()))?;
+            let conn = incoming.await?;
+            (endpoint, conn)
         };
 
-        let (mut send_stream, mut recv_stream) = conn
-            .open_bi()
-            .map_err(|e| EngineError::Quic(e.to_string()))?;
+        let (mut send_stream, mut recv_stream) = conn.open_bi()?;
 
         // Perform split handshake protocol
         let (key, cipher_id) = transfer::handshake_sender_split(
@@ -197,9 +197,7 @@ impl HayateSender {
             .await?
         };
 
-        send_stream
-            .finish()
-            .map_err(|e| EngineError::Quic(e.to_string()))?;
+        send_stream.finish()?;
 
         // Wait for receiver to finish processing and close the connection
         let drain_buf = vec![0u8; 1];
@@ -287,6 +285,7 @@ impl HayateSender {
         let dir_clone = dir.to_path_buf();
 
         std::thread::spawn(move || {
+            use std::io::Write;
             struct ChanWriter {
                 tx: flume::Sender<Result<Vec<u8>, std::io::Error>>,
             }
@@ -301,8 +300,14 @@ impl HayateSender {
                     Ok(())
                 }
             }
-            let mut writer = ChanWriter { tx: tx.clone() };
-            if let Err(e) = crate::tar::write_tar_sync(&dir_clone, &mut writer) {
+            let writer = ChanWriter { tx: tx.clone() };
+            let mut buffered_writer = std::io::BufWriter::with_capacity(128 * 1024, writer);
+            let mut run = move || -> Result<(), std::io::Error> {
+                crate::tar::write_tar_sync(&dir_clone, &mut buffered_writer)?;
+                buffered_writer.flush()?;
+                Ok(())
+            };
+            if let Err(e) = run() {
                 let _ = tx.send(Err(e));
             }
         });
@@ -419,13 +424,12 @@ impl HayateReceiver {
     ) -> Result<(String, PathBuf), EngineError> {
         let output_dir = output_dir.as_ref();
 
-        let conn = if let Some(phrase) = &self.code {
+        let (_endpoint, conn) = if let Some(phrase) = &self.code {
             let Some((_name, peer_addr, _os)) = crate::discovery::listen_for_broadcast(
-                Some(phrase.clone()),
+                Some(phrase.as_str()),
                 Duration::from_secs(30),
             )
-            .await
-            .map_err(EngineError::Io)?
+            .await?
             else {
                 return Err(EngineError::Handshake(
                     "Timed out waiting for sender broadcast".into(),
@@ -434,27 +438,20 @@ impl HayateReceiver {
 
             let endpoint = network::bind_client().await?;
             let client_cfg = network::client_config()?;
-            let connecting = endpoint
-                .connect(peer_addr, "hayate.local", Some(client_cfg))
-                .map_err(|e| EngineError::Quic(e.to_string()))?;
-            connecting
-                .await
-                .map_err(|e| EngineError::Quic(e.to_string()))?
+            let connecting = endpoint.connect(peer_addr, "hayate.local", Some(client_cfg))?;
+            let conn = connecting.await?;
+            (endpoint, conn)
         } else {
             let endpoint = network::bind_server(self.bind_addr).await?;
             let incoming = endpoint
                 .wait_incoming()
                 .await
-                .ok_or_else(|| EngineError::Quic("Endpoint closed".into()))?;
-            incoming
-                .await
-                .map_err(|e| EngineError::Quic(e.to_string()))?
+                .ok_or_else(|| EngineError::Handshake("Endpoint closed".into()))?;
+            let conn = incoming.await?;
+            (endpoint, conn)
         };
 
-        let (mut send_stream, mut recv_stream) = conn
-            .accept_bi()
-            .await
-            .map_err(|e| EngineError::Quic(e.to_string()))?;
+        let (mut send_stream, mut recv_stream) = conn.accept_bi().await?;
 
         // Perform handshake
         let ((key, cipher_id), meta) = transfer::handshake_receiver_split(

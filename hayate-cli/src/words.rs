@@ -37,8 +37,15 @@ const WORDS: &[&str] = &[
 
 pub fn generate_phrase() -> String {
     let mut rng = rand::rng();
-    let w1 = WORDS[rng.random_range(0..WORDS.len())];
-    let w2 = WORDS[rng.random_range(0..WORDS.len())];
-    let w3 = WORDS[rng.random_range(0..WORDS.len())];
-    format!("{}-{}-{}", w1, w2, w3)
+    let mut indices = Vec::with_capacity(4);
+    while indices.len() < 4 {
+        let idx = rng.random_range(0..WORDS.len());
+        if !indices.contains(&idx) {
+            indices.push(idx);
+        }
+    }
+    format!(
+        "{}-{}-{}-{}",
+        WORDS[indices[0]], WORDS[indices[1]], WORDS[indices[2]], WORDS[indices[3]]
+    )
 }

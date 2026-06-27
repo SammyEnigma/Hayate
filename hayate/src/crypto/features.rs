@@ -4,6 +4,9 @@
 #[inline]
 #[must_use]
 pub fn is_aes_hw_accelerated() -> bool {
+    if std::env::var_os("HAYATE_FORCE_CHACHA20").is_some() {
+        return false;
+    }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         std::is_x86_feature_detected!("aes")

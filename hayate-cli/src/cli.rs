@@ -24,8 +24,8 @@ pub fn cli_styles() -> Styles {
 Examples:
   hayate receive --output ./downloads
   hayate send ./photo.jpg 192.168.1.20:50001
-  hayate send ./project --code alpha-bravo-charlie
-  hayate receive --code alpha-bravo-charlie
+  hayate send ./project --code alpha-bravo-charlie-delta
+  hayate receive --code alpha-bravo-charlie-delta
   hayate discover --timeout 5",
     disable_help_subcommand = false,
     styles = cli_styles(),

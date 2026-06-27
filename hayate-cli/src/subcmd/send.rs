@@ -43,8 +43,11 @@ pub async fn run(args: SendArgs) -> Result<()> {
 
         output::stage("connect", format!("dialing {target_addr}"));
 
-        let endpoint = network::bind_client().await?;
-        let client_config = network::client_config()?;
+        let endpoint = network::bind_client()
+            .await
+            .context("Failed to bind UDP socket for client")?;
+        let client_config =
+            network::client_config().context("Failed to build client configuration")?;
         let spinner = if args.no_progress {
             None
         } else {
@@ -54,7 +57,9 @@ pub async fn run(args: SendArgs) -> Result<()> {
         };
         let conn_result: Result<_> =
             match endpoint.connect(target_addr, "hayate.local", Some(client_config)) {
-                Ok(connecting) => connecting.await.map_err(Into::into),
+                Ok(connecting) => connecting
+                    .await
+                    .context("Failed to establish connection to receiver"),
                 Err(e) => Err(e.into()),
             };
         if let Some(spinner) = &spinner {
@@ -69,14 +74,19 @@ pub async fn run(args: SendArgs) -> Result<()> {
             output::stage("pairing", format!("waiting with code \"{phrase}\""));
         }
 
-        let bind_addr: std::net::SocketAddr = "0.0.0.0:0".parse().unwrap();
-        let endpoint = network::bind_server(bind_addr).await?;
+        let bind_addr =
+            std::net::SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 0);
+        let endpoint = network::bind_server(bind_addr)
+            .await
+            .context("Failed to bind server socket")?;
         let local_port = endpoint.local_addr()?.port();
 
         let phrase_clone = phrase.clone();
+        let (cancel_tx, cancel_rx) = flume::bounded(1);
+        let _broadcaster_guard = hayate::discovery::BroadcasterGuard::new(cancel_tx);
         compio::runtime::spawn(async move {
             let channel_id = hayate::discovery::derive_channel_id(&phrase_clone);
-            let _ = hayate::discovery::start_broadcaster(channel_id, local_port).await;
+            let _ = hayate::discovery::start_broadcaster(&channel_id, local_port, cancel_rx).await;
         })
         .detach();
 
@@ -103,7 +113,9 @@ pub async fn run(args: SendArgs) -> Result<()> {
         if let Some(spinner) = &spinner {
             spinner.set_message("receiver connected");
         }
-        let conn_result = incoming.await;
+        let conn_result = incoming
+            .await
+            .context("Connection handshake failed with receiver");
         if let Some(spinner) = &spinner {
             spinner.finish_and_clear();
         }
@@ -113,7 +125,9 @@ pub async fn run(args: SendArgs) -> Result<()> {
 
     output::ok(&format!("Connected to {}", conn.remote_address()));
 
-    let (mut send_stream, mut recv_stream) = conn.open_bi()?;
+    let (mut send_stream, mut recv_stream) = conn
+        .open_bi()
+        .context("Failed to open streams for handshake")?;
 
     // ── Stage 2: Prepare ─────────────────────────────────────────────
     let (meta, total_size) = build_metadata(path, args.hash.clone())?;
@@ -126,7 +140,8 @@ pub async fn run(args: SendArgs) -> Result<()> {
         &meta,
         passphrase.as_deref(),
     )
-    .await?;
+    .await
+    .context("Handshake cipher negotiation failed")?;
 
     // ── Show transfer info card ──────────────────────────────────────
     let kind = if meta.transfer_type == TRANSFER_DIR {
@@ -178,7 +193,8 @@ pub async fn run(args: SendArgs) -> Result<()> {
                 }
             },
         )
-        .await?
+        .await
+        .context("Failed to send directory contents")?
     } else {
         send_file(
             path,
@@ -193,10 +209,14 @@ pub async fn run(args: SendArgs) -> Result<()> {
                 }
             },
         )
-        .await?
+        .await
+        .context("Failed to send file contents")?
     };
 
-    send_stream.finish()?;
+    compio::time::sleep(std::time::Duration::from_millis(500)).await;
+    send_stream
+        .finish()
+        .context("Failed to finalize send stream")?;
 
     // Wait for receiver to finish processing and close the connection
     let drain_buf = vec![0u8; 1];
@@ -308,8 +328,15 @@ async fn send_directory(
                 Ok(())
             }
         }
-        let mut writer = ChanWriter { tx: tx.clone() };
-        if let Err(e) = hayate::tar::write_tar_sync(&dir_clone, &mut writer) {
+        let writer = ChanWriter { tx: tx.clone() };
+        let mut buffered_writer = std::io::BufWriter::with_capacity(128 * 1024, writer);
+        let mut run = move || -> Result<(), std::io::Error> {
+            hayate::tar::write_tar_sync(&dir_clone, &mut buffered_writer)?;
+            use std::io::Write;
+            buffered_writer.flush()?;
+            Ok(())
+        };
+        if let Err(e) = run() {
             let _ = tx.send(Err(e));
         }
     });

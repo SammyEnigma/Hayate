@@ -158,7 +158,7 @@ impl Metadata {
         let total_size = u64::from_be_bytes(
             raw[2 + name_len..2 + name_len + 8]
                 .try_into()
-                .expect("slice len == 8"),
+                .map_err(|_| crate::EngineError::InvalidFrame("metadata truncated".into()))?,
         );
         let transfer_type = raw[2 + name_len + 8];
         let algo_len = raw[2 + name_len + 9] as usize;

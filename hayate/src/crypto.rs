@@ -39,7 +39,7 @@ impl AeadKey {
     pub fn new(key: &[u8; 32], cipher_id: u8) -> Result<Self, EngineError> {
         let algo = get_algorithm(cipher_id)?;
         let unbound = UnboundKey::new(algo, key)
-            .map_err(|_| EngineError::Crypto("failed to create UnboundKey".into()))?;
+            .map_err(|_| EngineError::Crypto("failed to create UnboundKey"))?;
         Ok(Self {
             inner: LessSafeKey::new(unbound),
         })
@@ -51,7 +51,7 @@ pub fn get_algorithm(cipher_id: u8) -> Result<&'static ring::aead::Algorithm, En
     match cipher_id {
         CIPHER_CHACHA20 => Ok(&ring::aead::CHACHA20_POLY1305),
         CIPHER_AES256_GCM => Ok(&ring::aead::AES_256_GCM),
-        _ => Err(EngineError::Crypto("Unknown cipher suite requested".into())),
+        _ => Err(EngineError::Crypto("Unknown cipher suite requested")),
     }
 }
 
@@ -80,14 +80,18 @@ pub fn derive_key(
     let info: &[&[u8]] = &[b"hayate-v2-key"];
     let okm = prk
         .expand(info, hkdf::HKDF_SHA256)
-        .map_err(|_| EngineError::Crypto("HKDF expand failed".into()))?;
+        .map_err(|_| EngineError::Crypto("HKDF expand failed"))?;
     let mut key = [0u8; 32];
     okm.fill(&mut key)
-        .map_err(|_| EngineError::Crypto("HKDF expand failed".into()))?;
+        .map_err(|_| EngineError::Crypto("HKDF expand failed"))?;
     Ok(key)
 }
 
 /// Encrypts `plaintext` in-place inside `buf`, writing nonce + ciphertext + tag.
+///
+/// Creates a new `AeadKey` on each call. For repeated operations with the same
+/// key (e.g. every frame in a transfer), callers should prefer
+/// [`encrypt_frame_with_key`] which takes a pre-constructed [`AeadKey`].
 pub fn encrypt_frame<'buf>(
     key: &[u8; 32],
     cipher_id: u8,
@@ -118,7 +122,7 @@ pub fn encrypt_frame_with_key<'buf>(
     let tag = key
         .inner
         .seal_in_place_separate_tag(nonce, Aad::empty(), &mut buf[plain_start..plain_end])
-        .map_err(|_| EngineError::Crypto("AEAD encrypt failed".into()))?;
+        .map_err(|_| EngineError::Crypto("AEAD encrypt failed"))?;
 
     buf.extend_from_slice(tag.as_ref());
 
@@ -126,6 +130,9 @@ pub fn encrypt_frame_with_key<'buf>(
 }
 
 /// Decrypts a frame produced by `encrypt_frame`.
+///
+/// Creates a new `AeadKey` on each call. For repeated operations, prefer
+/// [`decrypt_frame_into_with_key`] with a pre-constructed [`AeadKey`].
 pub fn decrypt_frame(key: &[u8; 32], cipher_id: u8, frame: &[u8]) -> Result<Vec<u8>, EngineError> {
     let mut out = Vec::with_capacity(frame.len());
     decrypt_frame_into(key, cipher_id, frame, &mut out)?;
@@ -133,6 +140,9 @@ pub fn decrypt_frame(key: &[u8; 32], cipher_id: u8, frame: &[u8]) -> Result<Vec<
 }
 
 /// Decrypts a frame produced by `encrypt_frame` into a reused buffer.
+///
+/// Creates a new `AeadKey` on each call. For repeated operations, prefer
+/// [`decrypt_frame_into_with_key`] with a pre-constructed [`AeadKey`].
 pub fn decrypt_frame_into(
     key: &[u8; 32],
     cipher_id: u8,
@@ -144,13 +154,16 @@ pub fn decrypt_frame_into(
 }
 
 /// Decrypts a frame with an already prepared AEAD key into a reused buffer.
+///
+/// This is the hot-path variant used by transfer workers that process thousands
+/// of frames with the same negotiated key.
 pub fn decrypt_frame_into_with_key(
     key: &AeadKey,
     frame: &[u8],
     out: &mut Vec<u8>,
 ) -> Result<(), EngineError> {
     if frame.len() < NONCE_LEN + TAG_LEN {
-        return Err(EngineError::Crypto("frame too short".into()));
+        return Err(EngineError::Crypto("frame too short"));
     }
     let (nonce_bytes, rest) = frame.split_at(NONCE_LEN);
     let mut nonce_array = [0u8; NONCE_LEN];
@@ -163,7 +176,7 @@ pub fn decrypt_frame_into_with_key(
     let plaintext_len = key
         .inner
         .open_in_place(nonce, Aad::empty(), out)
-        .map_err(|_| EngineError::Crypto("AEAD decrypt failed".into()))?
+        .map_err(|_| EngineError::Crypto("AEAD decrypt failed"))?
         .len();
     out.truncate(plaintext_len);
 
