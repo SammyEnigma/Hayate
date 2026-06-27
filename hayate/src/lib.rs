@@ -164,5 +164,7 @@ pub mod tar;
 pub mod transfer;
 
 pub use discovery::BroadcasterGuard;
+pub use discovery::DiscoveredPeer;
 pub use error::EngineError;
+pub use protocol::Metadata;
 pub use runner::{HayateReceiver, HayateSender};

@@ -93,14 +93,12 @@ pub async fn run(args: SendArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
             .context("Failed to bind server socket")?;
         let local_port = endpoint.local_addr()?.port();
 
-        let (_cancel_tx, cancel_rx) = flume::bounded(1);
         let os_name = std::env::consts::OS.to_owned();
         let channel_id = hayate::discovery::derive_channel_id(&phrase);
         let _broadcaster_guard = hayate::discovery::start_broadcaster_hybrid(
             &channel_id,
             local_port,
             &os_name,
-            cancel_rx,
         )
         .context("Failed to start hybrid broadcaster")?;
 
@@ -282,23 +280,13 @@ fn build_metadata(path: &Path, hash: String) -> Result<(Metadata, u64)> {
     if path.is_dir() {
         let total = hayate::tar::estimate_dir_size(path);
         Ok((
-            Metadata {
-                filename,
-                total_size: total,
-                transfer_type: TRANSFER_DIR,
-                hash_algo: hash,
-            },
+            Metadata::new(filename, total, TRANSFER_DIR, hash),
             total,
         ))
     } else {
         let total = std::fs::metadata(path)?.len();
         Ok((
-            Metadata {
-                filename,
-                total_size: total,
-                transfer_type: TRANSFER_FILE,
-                hash_algo: hash,
-            },
+            Metadata::new(filename, total, TRANSFER_FILE, hash),
             total,
         ))
     }

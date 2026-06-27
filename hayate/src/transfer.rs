@@ -27,6 +27,8 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 /// Source of data payload to be transferred.
+#[derive(Debug)]
+#[non_exhaustive]
 pub enum PayloadSource {
     /// A local file on the filesystem.
     File {
@@ -40,6 +42,8 @@ pub enum PayloadSource {
 }
 
 /// Destination for incoming data payload.
+#[derive(Debug)]
+#[non_exhaustive]
 pub enum PayloadSink {
     /// A local file on the filesystem.
     File {

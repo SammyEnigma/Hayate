@@ -144,14 +144,12 @@ impl HayateSender {
             let local_port = endpoint.local_addr()?.port();
 
             let phrase_clone = phrase.clone();
-            let (_cancel_tx, cancel_rx) = flume::bounded(1);
             let channel_id = crate::discovery::derive_channel_id(&phrase_clone);
             let os_name = std::env::consts::OS.to_owned();
             let _broadcaster_guard = crate::discovery::start_broadcaster_hybrid(
                 &channel_id,
                 local_port,
                 &os_name,
-                cancel_rx,
             )
             .map_err(|e| EngineError::Handshake(format!("broadcaster start failed: {e}")))?;
 
@@ -228,23 +226,13 @@ impl HayateSender {
         if path.is_dir() {
             let total = crate::tar::estimate_dir_size(path);
             Ok((
-                Metadata {
-                    filename,
-                    total_size: total,
-                    transfer_type: TRANSFER_DIR,
-                    hash_algo: self.hash_algo.clone(),
-                },
+                Metadata::new(filename, total, TRANSFER_DIR, self.hash_algo.clone()),
                 total,
             ))
         } else {
             let total = std::fs::metadata(path).map_err(EngineError::Io)?.len();
             Ok((
-                Metadata {
-                    filename,
-                    total_size: total,
-                    transfer_type: TRANSFER_FILE,
-                    hash_algo: self.hash_algo.clone(),
-                },
+                Metadata::new(filename, total, TRANSFER_FILE, self.hash_algo.clone()),
                 total,
             ))
         }

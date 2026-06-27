@@ -25,37 +25,9 @@ const MDNS_SERVICE_TYPE: &str = "_hayate._udp.local.";
 /// UDP discovery port.
 const UDP_DISCOVERY_PORT: u16 = 50002;
 
-/// RAII guard that shuts down mDNS and signals the UDP broadcaster to stop
-/// when dropped.
-pub struct BroadcasterGuard {
-    mdns_handle: Option<mdns_sd::ServiceDaemon>,
-    cancel_tx: Option<flume::Sender<()>>,
-}
-
-impl BroadcasterGuard {
-    /// Creates a new guard linked to the given cancel channel and mDNS daemon.
-    #[must_use]
-    pub fn new(cancel_tx: flume::Sender<()>, mdns: mdns_sd::ServiceDaemon) -> Self {
-        Self {
-            cancel_tx: Some(cancel_tx),
-            mdns_handle: Some(mdns),
-        }
-    }
-}
-
-impl Drop for BroadcasterGuard {
-    fn drop(&mut self) {
-        if let Some(tx) = self.cancel_tx.take() {
-            let _ = tx.send(());
-        }
-        if let Some(mdns) = self.mdns_handle.take() {
-            let _ = mdns.shutdown();
-        }
-    }
-}
-
 /// Result of a discovery probe containing peer metadata.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct DiscoveredPeer {
     /// Human-readable name of the peer.
     pub name: String,
@@ -80,6 +52,47 @@ pub fn derive_channel_id(phrase: &str) -> String {
 // Broadcaster (sender side)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// RAII guard that shuts down both the mDNS service and the UDP broadcast
+/// loop when dropped.
+pub struct BroadcasterGuard {
+    mdns_handle: Option<mdns_sd::ServiceDaemon>,
+    cancel_tx: Option<flume::Sender<()>>,
+}
+
+impl std::fmt::Debug for BroadcasterGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BroadcasterGuard")
+            .field("mdns_handle", &self.mdns_handle.is_some())
+            .field("cancel_tx", &self.cancel_tx.is_some())
+            .finish()
+    }
+}
+
+impl BroadcasterGuard {
+    /// Creates a new guard from a cancel sender and mDNS daemon.
+    ///
+    /// Prefer [`start_broadcaster_hybrid`] — it creates the channel pair
+    /// and manages the lifecycle automatically.
+    #[must_use]
+    pub(crate) fn new(cancel_tx: flume::Sender<()>, mdns: mdns_sd::ServiceDaemon) -> Self {
+        Self {
+            cancel_tx: Some(cancel_tx),
+            mdns_handle: Some(mdns),
+        }
+    }
+}
+
+impl Drop for BroadcasterGuard {
+    fn drop(&mut self) {
+        if let Some(tx) = self.cancel_tx.take() {
+            let _ = tx.send(());
+        }
+        if let Some(mdns) = self.mdns_handle.take() {
+            let _ = mdns.shutdown();
+        }
+    }
+}
+
 /// Starts both mDNS and UDP broadcast advertisement.
 ///
 /// Creates an mDNS daemon, registers a `_hayate._udp.local.` service with
@@ -91,8 +104,9 @@ pub fn start_broadcaster_hybrid(
     channel_id: &str,
     port: u16,
     os_name: &str,
-    cancel_rx: flume::Receiver<()>,
 ) -> Result<BroadcasterGuard, io::Error> {
+    let (cancel_tx, cancel_rx) = flume::bounded::<()>(1);
+
     let mdns = mdns_sd::ServiceDaemon::new().map_err(io::Error::other)?;
 
     let instance_name = format!("hayate-{channel_id}");
@@ -128,7 +142,7 @@ pub fn start_broadcaster_hybrid(
     })
     .detach();
 
-    Ok(BroadcasterGuard::new(flume::bounded(1).0, mdns))
+    Ok(BroadcasterGuard::new(cancel_tx, mdns))
 }
 
 /// Legacy broadcaster — uses only UDP. Kept for backward compatibility.
@@ -191,7 +205,7 @@ pub fn listen_for_broadcast(
 
     let (found_tx, found_rx) = flume::bounded::<(String, SocketAddr, String)>(1);
 
-    // ── mDNS browser (background thread) ─────────────────────────────
+    // mDNS browser (background thread)
     let target_cid_mdns = target_channel_id.clone();
     let found_tx_mdns = found_tx.clone();
     let mdns_task = std::thread::spawn(move || {
@@ -225,11 +239,8 @@ pub fn listen_for_broadcast(
                     };
                     if matches {
                         let peer_addr = SocketAddr::new(IpAddr::V4(addr), remote_port);
-                        let _ = found_tx_mdns.send((
-                            format!("mDNS:{remote_chid}"),
-                            peer_addr,
-                            remote_os,
-                        ));
+                        let _ = found_tx_mdns
+                            .send((format!("mDNS:{remote_chid}"), peer_addr, remote_os));
                         let _ = mdns.shutdown();
                         return;
                     }
@@ -239,7 +250,7 @@ pub fn listen_for_broadcast(
         let _ = mdns.shutdown();
     });
 
-    // ── UDP listener (background thread) ─────────────────────────────
+    // UDP listener (background thread)
     let target_cid_udp = target_channel_id.clone();
     let found_tx_udp = found_tx;
     let udp_task = std::thread::spawn(move || -> Result<(), io::Error> {

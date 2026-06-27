@@ -10,6 +10,14 @@ pub enum EngineError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// The operation timed out before completing.
+    #[error("timed out: {0}")]
+    TimedOut(String),
+
+    /// The operation was cancelled by the caller.
+    #[error("cancelled: {0}")]
+    Cancelled(String),
+
     /// The client and server protocol versions do not match.
     #[error("protocol version mismatch: local {local}, remote {remote}")]
     ProtocolMismatch {

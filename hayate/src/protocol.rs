@@ -60,6 +60,7 @@ pub const CHUNK_SIZE: usize = 1024 * 1024;
 
 /// Metadata that travels in the encrypted handshake.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Metadata {
     /// Display name sent to the receiver and used as the output filename.
     pub filename: String,
@@ -97,6 +98,22 @@ fn invalid_hash_algo_len(len: usize) -> crate::EngineError {
 }
 
 impl Metadata {
+    /// Creates a new validated [`Metadata`] instance.
+    #[must_use]
+    pub fn new(
+        filename: String,
+        total_size: u64,
+        transfer_type: u8,
+        hash_algo: String,
+    ) -> Self {
+        Self {
+            filename,
+            total_size,
+            transfer_type,
+            hash_algo,
+        }
+    }
+
     /// Validates metadata fields before they are encoded or used to route a payload.
     ///
     /// This rejects empty or oversized names and transfer kinds outside the
@@ -171,12 +188,7 @@ impl Metadata {
             .map_err(|_| crate::EngineError::InvalidFrame("hash algorithm not UTF-8".into()))?
             .to_owned();
 
-        Ok(Self {
-            filename,
-            total_size,
-            transfer_type,
-            hash_algo,
-        })
+        Ok(Self::new(filename, total_size, transfer_type, hash_algo))
     }
 }
 
@@ -198,12 +210,7 @@ mod tests {
 
     #[test]
     fn validate_rejects_unknown_transfer_type() {
-        let meta = Metadata {
-            filename: "name".to_owned(),
-            total_size: 0,
-            transfer_type: 0xff,
-            hash_algo: "blake3".to_owned(),
-        };
+        let meta = Metadata::new("name".to_owned(), 0, 0xff, "blake3".to_owned());
 
         let err = meta.validate().unwrap_err();
         assert!(matches!(err, crate::EngineError::InvalidFrame(_)));
@@ -211,12 +218,7 @@ mod tests {
 
     #[test]
     fn validate_rejects_empty_filename() {
-        let meta = Metadata {
-            filename: String::new(),
-            total_size: 0,
-            transfer_type: TRANSFER_FILE,
-            hash_algo: "blake3".to_owned(),
-        };
+        let meta = Metadata::new(String::new(), 0, TRANSFER_FILE, "blake3".to_owned());
 
         let err = meta.validate().unwrap_err();
         assert!(matches!(err, crate::EngineError::InvalidFrame(_)));
