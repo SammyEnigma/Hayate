@@ -86,6 +86,23 @@ dist-generate-ci:
 dist-installers:
     cargo dist build --installer=shell --installer=powershell --local
 
+# --- release helpers ---
+
+# Show current version and recent tags
+release-status:
+    @echo "Workspace version: $$(grep 'version = ' Cargo.toml | head -1 | sed 's/.*\"\(.*\)\"/\1/')"
+    @echo "hayate on crates.io: $$(cargo search hayate --limit 1 2>/dev/null | head -1 | cut -d'"' -f2)"
+    @echo ""
+    @echo "Recent tags:"
+    @git tag -l 'v*' --sort=-version:refname | head -5
+    @echo ""
+    @echo "Pending commits since last tag:"
+    @git log --oneline $(git describe --tags --abbrev=0 2>/dev/null || echo HEAD)..HEAD 2>/dev/null || echo "  (none)"
+
+# List what dist will build for the current version
+release-plan:
+    dist plan
+
 # --- winget submission ---
 
 # Copy winget manifests to winget-pkgs repo for PR
