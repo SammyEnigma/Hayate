@@ -7,8 +7,6 @@ members = ["cargo:hayate-cli"]
 cargo-dist-version = "0.32.0"
 # CI backends to support
 ci = "github"
-# Skip checking whether the specified configuration files are up to date
-allow-dirty = ["ci"]
 # The installers to generate for each app
 installers = ["shell", "powershell"]
 # Target platforms to build apps for (Rust target-triple syntax)
