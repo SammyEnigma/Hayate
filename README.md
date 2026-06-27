@@ -69,6 +69,12 @@ Hayate is the only tool that combines QUIC transport, automatic LAN peer discove
 curl -sSf https://shiinasaku.github.io/Hayate/install.sh | bash
 ```
 
+### Windows (winget)
+
+```powershell
+winget install ShiinaSaku.Hayate
+```
+
 ### Windows (PowerShell)
 
 ```powershell

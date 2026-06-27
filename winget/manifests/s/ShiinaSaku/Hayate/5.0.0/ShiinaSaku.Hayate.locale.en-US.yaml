@@ -1,0 +1,32 @@
+PackageIdentifier: ShiinaSaku.Hayate
+PackageVersion: 5.0.0
+PackageLocale: en-US
+Publisher: ShiinaSaku
+PublisherUrl: https://github.com/ShiinaSaku
+PublisherSupportUrl: https://github.com/ShiinaSaku/Hayate/issues
+PrivacyUrl: https://github.com/ShiinaSaku/Hayate/blob/master/LICENSE
+Author: Saku Shiina
+PackageName: Hayate
+PackageUrl: https://github.com/ShiinaSaku/Hayate
+License: MIT
+LicenseUrl: https://github.com/ShiinaSaku/Hayate/blob/master/LICENSE
+Copyright: Copyright (c) 2026 Saku Shiina
+ShortDescription: Encrypted LAN file transfer at wire speed over QUIC
+Description: Hayate sends files and folders across your local network — encrypted, compressed, and at full wire speed. Built on QUIC and completion-based async I/O (io_uring/IOCP), with mDNS peer discovery. Supports macOS, Linux, Windows, and Android.
+Moniker: hayate
+Tags:
+  - file-transfer
+  - lan
+  - p2p
+  - quic
+  - encrypted
+  - cli
+ReleaseNotes: https://github.com/ShiinaSaku/Hayate/releases/tag/v5.0.0
+ReleaseNotesUrl: https://github.com/ShiinaSaku/Hayate/releases/tag/v5.0.0
+Documentations:
+  - DocumentLabel: Website
+    DocumentUrl: https://shiinasaku.github.io/Hayate
+  - DocumentLabel: CLI Reference
+    DocumentUrl: https://shiinasaku.github.io/Hayate/api/commands
+ManifestType: defaultLocale
+ManifestVersion: 1.9.0

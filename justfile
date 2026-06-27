@@ -85,3 +85,15 @@ dist-generate-ci:
 # Build installers locally (shell + powershell scripts)
 dist-installers:
     cargo dist build --installer=shell --installer=powershell --local
+
+# --- winget submission ---
+
+# Copy winget manifests to winget-pkgs repo for PR
+winget-submit version="5.0.0" sha_x64="" sha_arm64="":
+    @echo "1. Fork https://github.com/microsoft/winget-pkgs"
+    @echo "2. Update winget/manifests/s/ShiinaSaku/Hayate/{{version}}/ with SHAs:"
+    @echo "   x64:  {{sha_x64}}"
+    @echo "   arm64: {{sha_arm64}}"
+    @echo "3. Copy to winget-pkgs:"
+    @echo "   cp -r winget/manifests/* ../winget-pkgs/manifests/"
+    @echo "4. PR to microsoft/winget-pkgs"
