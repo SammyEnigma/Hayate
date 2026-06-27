@@ -11,6 +11,7 @@
 <p align="center">
   <a href="https://crates.io/crates/hayate"><img src="https://img.shields.io/crates/v/hayate.svg" alt="Crates.io"></a>
   <a href="https://docs.rs/hayate"><img src="https://docs.rs/hayate/badge.svg" alt="Documentation"></a>
+  <a href="https://shiinasaku.github.io/Hayate/"><img src="https://img.shields.io/badge/website-docs-black" alt="Website"></a>
   <a href="../LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
 </p>
 
@@ -24,7 +25,7 @@ Driven by `compio` (an `io_uring`/IOCP runtime) and `compio-quic`, Hayate achiev
 
 ```toml
 [dependencies]
-hayate = "3.0"
+hayate = "4.0"
 compio = { version = "0.19", features = ["macros", "runtime", "fs", "net", "time"] }
 ```
 
