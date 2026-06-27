@@ -100,12 +100,7 @@ fn invalid_hash_algo_len(len: usize) -> crate::EngineError {
 impl Metadata {
     /// Creates a new validated [`Metadata`] instance.
     #[must_use]
-    pub fn new(
-        filename: String,
-        total_size: u64,
-        transfer_type: u8,
-        hash_algo: String,
-    ) -> Self {
+    pub fn new(filename: String, total_size: u64, transfer_type: u8, hash_algo: String) -> Self {
         Self {
             filename,
             total_size,

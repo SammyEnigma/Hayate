@@ -239,8 +239,11 @@ pub fn listen_for_broadcast(
                     };
                     if matches {
                         let peer_addr = SocketAddr::new(IpAddr::V4(addr), remote_port);
-                        let _ = found_tx_mdns
-                            .send((format!("mDNS:{remote_chid}"), peer_addr, remote_os));
+                        let _ = found_tx_mdns.send((
+                            format!("mDNS:{remote_chid}"),
+                            peer_addr,
+                            remote_os,
+                        ));
                         let _ = mdns.shutdown();
                         return;
                     }

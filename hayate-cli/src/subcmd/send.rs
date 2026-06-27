@@ -95,12 +95,9 @@ pub async fn run(args: SendArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
 
         let os_name = std::env::consts::OS.to_owned();
         let channel_id = hayate::discovery::derive_channel_id(&phrase);
-        let _broadcaster_guard = hayate::discovery::start_broadcaster_hybrid(
-            &channel_id,
-            local_port,
-            &os_name,
-        )
-        .context("Failed to start hybrid broadcaster")?;
+        let _broadcaster_guard =
+            hayate::discovery::start_broadcaster_hybrid(&channel_id, local_port, &os_name)
+                .context("Failed to start hybrid broadcaster")?;
 
         let spinner = if args.no_progress {
             None
@@ -279,16 +276,10 @@ fn build_metadata(path: &Path, hash: String) -> Result<(Metadata, u64)> {
 
     if path.is_dir() {
         let total = hayate::tar::estimate_dir_size(path);
-        Ok((
-            Metadata::new(filename, total, TRANSFER_DIR, hash),
-            total,
-        ))
+        Ok((Metadata::new(filename, total, TRANSFER_DIR, hash), total))
     } else {
         let total = std::fs::metadata(path)?.len();
-        Ok((
-            Metadata::new(filename, total, TRANSFER_FILE, hash),
-            total,
-        ))
+        Ok((Metadata::new(filename, total, TRANSFER_FILE, hash), total))
     }
 }
 

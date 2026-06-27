@@ -146,12 +146,11 @@ impl HayateSender {
             let phrase_clone = phrase.clone();
             let channel_id = crate::discovery::derive_channel_id(&phrase_clone);
             let os_name = std::env::consts::OS.to_owned();
-            let _broadcaster_guard = crate::discovery::start_broadcaster_hybrid(
-                &channel_id,
-                local_port,
-                &os_name,
-            )
-            .map_err(|e| EngineError::Handshake(format!("broadcaster start failed: {e}")))?;
+            let _broadcaster_guard =
+                crate::discovery::start_broadcaster_hybrid(&channel_id, local_port, &os_name)
+                    .map_err(|e| {
+                        EngineError::Handshake(format!("broadcaster start failed: {e}"))
+                    })?;
 
             let incoming = endpoint
                 .wait_incoming()
