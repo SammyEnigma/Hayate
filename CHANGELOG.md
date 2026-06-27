@@ -7,14 +7,51 @@ All notable changes to Hayate are documented in this file.
 ## [5.1.0](https://github.com/ShiinaSaku/Hayate/compare/v5.0.0...v5.1.0) - 2026-06-27
 
 ### Added
+- **winget package manifests** for Windows Package Manager (`winget install ShiinaSaku.Hayate`)
+- **cargo-dist integration** — release artifacts (8 platform binaries, shell/powershell installers, updaters, checksums) now built automatically by `release.yml`
 
-- format
+### Changed
+- Release pipeline: custom `release-assets.yml` replaced by dist-generated `release.yml`. Tag pushes trigger dist build matrix.
+- README rewritten — comparison table, library example, updated flags, winget instructions
+
+### Fixed
+- `BroadcasterGuard` cancel channel bug — UDP broadcast now properly stops on guard drop
+- Release-plz no longer calls a separate build job; tag push autonomously triggers dist
+- CI: pnpm version, rustsec permissions, ghost-tracked public files
+
+### API
+- `#[non_exhaustive]` on `Metadata`, `DiscoveredPeer`, `PayloadSource`, `PayloadSink`
+- `BroadcasterGuard::new()` made `pub(crate)` — use `start_broadcaster_hybrid()`
+- `Metadata::new()` constructor added
+- `Metadata` and `DiscoveredPeer` re-exported at crate root
+- `Debug` impl added for `BroadcasterGuard`
+- `EngineError::TimedOut` and `EngineError::Cancelled` variants added
 
 ## [5.0.0](https://github.com/ShiinaSaku/Hayate/compare/v4.0.0...v5.0.0) - 2026-06-27
 
 ### Added
+- **mDNS + UDP hybrid discovery** — peers found via RFC 6762 mDNS (`_hayate._udp.local.`) with automatic UDP broadcast fallback. Works on Android, iOS, macOS, Linux, Windows without admin privileges.
+- **Hybrid broadcaster** (`start_broadcaster_hybrid`) — registers mDNS service with TXT records (channel ID, OS, port) simultaneously with UDP broadcast.
+- **Cross-platform terminal rendering** — Unicode box-drawing glyphs fall back to ASCII on Windows consoles and non-TTY. Progress bars auto-hide when stdout is piped.
+- `mdns-sd` 0.20 dependency for cross-platform mDNS discovery.
 
-- mDNS discovery, stability fixes, docs overhaul, CI upgrade
+### Changed
+- **Discovery timeouts**: receiver pairing 30s → 60s; `discover` scan 3s → 15s.
+- **QUIC idle timeout**: 60s → 300s to prevent spurious disconnects on large files.
+- **Keep-alive interval**: 5s → 3s for faster dead-peer detection.
+- **UDP broadcast interval**: 1s → 800ms.
+- **Progress bar UX**: premium spinner + gradient bar + right-aligned byte counts + colored speed tiers + compact ETA.
+
+### Fixed
+- **Sender hang after transfer**: `recv_stream.read()` time-bounded at 10s.
+- **Receiver shutdown**: `send_stream.finish()` + 200ms grace before `conn.close()`.
+- **Ctrl+C exit**: shared `Arc<AtomicBool>` cancellation flag, 1.5s grace period.
+- **Windows socket buffers**: tuned to 8MB on IOCP to avoid non-paged pool exhaustion.
+- **clippy**: zero warnings across the workspace.
+
+### Removed
+- Legacy UDP-only discovery code (replaced by mDNS + UDP hybrid).
+- `cliff.toml` (conflicted with release-plz).
 
 ## [4.0.0] — 2026-06
 
