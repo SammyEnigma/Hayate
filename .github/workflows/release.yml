@@ -157,8 +157,8 @@ jobs:
           echo "$HOME/LLVM-22.1.8-Linux-X64/bin" >> $GITHUB_PATH
       - name: Build artifacts
         env:
-          CC_aarch64_pc_windows_msvc: clang-cl
           CC_x86_64_pc_windows_msvc: clang-cl
+          XWIN_CROSS_COMPILER: ${{ contains(join(matrix.targets, ','), 'aarch64-pc-windows-msvc') && 'clang' || '' }}
         run: |
           # Actually do builds and make zips and whatnot
           dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
