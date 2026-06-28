@@ -11,6 +11,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use compio_quic::ConnectionError as QuicConnectionError;
 use hayate::{
     local_addr, network,
     protocol::{Metadata, TRANSFER_DIR},
@@ -207,7 +208,7 @@ pub async fn run(args: ReceiveArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
         output::print_listener_active(endpoint.local_addr()?);
     }
 
-    let spinner = if args.no_progress {
+    let mut spinner = if args.no_progress {
         None
     } else {
         let s = output::spinner("Waiting");
@@ -232,7 +233,10 @@ pub async fn run(args: ReceiveArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
         let conn = match incoming.await {
             Ok(c) => c,
             Err(e) => {
-                output::err(&format!("Connection failed: {e}"));
+                if !is_peer_close(&e) {
+                    output::err(&format!("Connection failed: {e}"));
+                }
+                spinner = respawn_spinner(args.no_progress);
                 continue;
             }
         };
@@ -242,7 +246,10 @@ pub async fn run(args: ReceiveArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
         let (mut send_stream, mut recv_stream) = match conn.accept_bi().await {
             Ok(streams) => streams,
             Err(e) => {
-                output::err(&format!("Failed to accept streams: {e}"));
+                if !is_peer_close(&e) {
+                    output::err(&format!("Failed to accept streams: {e}"));
+                }
+                spinner = respawn_spinner(args.no_progress);
                 continue;
             }
         };
@@ -258,6 +265,7 @@ pub async fn run(args: ReceiveArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
             Ok(r) => r,
             Err(e) => {
                 output::err(&format!("Handshake failed: {e}"));
+                spinner = respawn_spinner(args.no_progress);
                 continue;
             }
         };
@@ -289,11 +297,13 @@ pub async fn run(args: ReceiveArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
         }
         if let Err(e) = transfer::send_consent_write(&mut send_stream, accept).await {
             output::err(&format!("Failed to send transfer consent: {e}"));
+            spinner = respawn_spinner(args.no_progress);
             continue;
         }
         if !accept {
             output::warn("Transfer rejected.");
             conn.close(0u32.into(), b"rejected");
+            spinner = respawn_spinner(args.no_progress);
             continue;
         }
         let dest = dest.unwrap();
@@ -339,6 +349,7 @@ pub async fn run(args: ReceiveArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
             Err(e) => {
                 output::err(&format!("Transfer failed: {e}"));
                 conn.close(1u32.into(), b"failed");
+                spinner = respawn_spinner(args.no_progress);
                 continue;
             }
         };
@@ -370,6 +381,27 @@ pub async fn run(args: ReceiveArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Returns true if the error is a peer-initiated connection close (e.g. a
+/// discover probe or remote shutdown). These are benign and should be
+/// silently ignored so the listener keeps waiting.
+fn is_peer_close(e: &QuicConnectionError) -> bool {
+    matches!(
+        e,
+        QuicConnectionError::ApplicationClosed(_) | QuicConnectionError::ConnectionClosed(_)
+    )
+}
+
+/// Re-creates a "Waiting" spinner after handling a failed connection.
+fn respawn_spinner(no_progress: bool) -> Option<indicatif::ProgressBar> {
+    if no_progress {
+        None
+    } else {
+        let s = crate::output::spinner("Waiting");
+        s.set_message("for incoming connection…");
+        Some(s)
+    }
+}
 
 #[derive(Clone)]
 struct DirCompleter;

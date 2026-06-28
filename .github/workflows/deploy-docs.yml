@@ -23,21 +23,25 @@ jobs:
     name: Build Docs
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@v6
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
         with:
-          version: latest
+          version: "latest"
 
-      - uses: actions/setup-node@v6
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: pnpm
           cache-dependency-path: docs/pnpm-lock.yaml
 
-      - uses: actions/configure-pages@v6
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
 
       - name: Install dependencies
         working-directory: docs
@@ -47,17 +51,19 @@ jobs:
         working-directory: docs
         run: pnpm run build
 
-      - uses: actions/upload-pages-artifact@v5
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
         with:
           path: docs/doc_build
 
   deploy:
-    name: Deploy to Pages
+    name: Deploy to GitHub Pages
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/deploy-pages@v5
+      - name: Deploy
         id: deployment
+        uses: actions/deploy-pages@v4
