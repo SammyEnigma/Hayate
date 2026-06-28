@@ -147,12 +147,18 @@ jobs:
       - name: Install LLVM 22
         if: runner.os == 'Linux'
         run: |
+          if command -v sudo >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y wget tar xz-utils libtinfo5 libtinfo6 libxml2 ca-certificates
+          else
+            apt-get update && apt-get install -y wget tar xz-utils libtinfo5 libtinfo6 libxml2 ca-certificates
+          fi
           wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/LLVM-22.1.8-Linux-X64.tar.xz
           tar -xf LLVM-22.1.8-Linux-X64.tar.xz -C $HOME
           echo "$HOME/LLVM-22.1.8-Linux-X64/bin" >> $GITHUB_PATH
       - name: Build artifacts
         env:
           CC_aarch64_pc_windows_msvc: clang-cl
+          CC_x86_64_pc_windows_msvc: clang-cl
         run: |
           # Actually do builds and make zips and whatnot
           dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
