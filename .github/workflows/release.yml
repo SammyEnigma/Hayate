@@ -148,9 +148,9 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           if command -v sudo >/dev/null 2>&1; then
-            sudo apt-get update && sudo apt-get install -y wget tar xz-utils libtinfo5 libtinfo6 libxml2 ca-certificates
+            sudo apt-get update && sudo apt-get install -y wget tar xz-utils libtinfo6 libxml2 ca-certificates
           else
-            apt-get update && apt-get install -y wget tar xz-utils libtinfo5 libtinfo6 libxml2 ca-certificates
+            apt-get update && apt-get install -y wget tar xz-utils libtinfo6 libxml2 ca-certificates
           fi
           wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/LLVM-22.1.8-Linux-X64.tar.xz
           tar -xf LLVM-22.1.8-Linux-X64.tar.xz -C $HOME
