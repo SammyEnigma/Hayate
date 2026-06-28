@@ -144,7 +144,15 @@ jobs:
       - name: Install dependencies
         run: |
           ${{ matrix.packages_install }}
+      - name: Install LLVM 22
+        if: runner.os == 'Linux'
+        run: |
+          wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/LLVM-22.1.8-Linux-X64.tar.xz
+          tar -xf LLVM-22.1.8-Linux-X64.tar.xz -C $HOME
+          echo "$HOME/LLVM-22.1.8-Linux-X64/bin" >> $GITHUB_PATH
       - name: Build artifacts
+        env:
+          CC_aarch64_pc_windows_msvc: clang-cl
         run: |
           # Actually do builds and make zips and whatnot
           dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
