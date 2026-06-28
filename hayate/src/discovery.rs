@@ -45,7 +45,7 @@ pub fn derive_channel_id(phrase: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(phrase.as_bytes());
     let result = hasher.finalize();
-    hex::encode(&result[..4])
+    crate::hex_encode(&result[..4])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -63,9 +63,7 @@ pub async fn run(args: SendArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
         let spinner = if args.no_progress {
             None
         } else {
-            let spinner = output::spinner("Connecting");
-            spinner.set_message(target_addr.to_string());
-            Some(spinner)
+            Some(output::spinner("Connecting", &target_addr.to_string()))
         };
         let conn_result: Result<_> =
             match endpoint.connect(target_addr, "hayate.local", Some(client_config)) {
@@ -102,9 +100,7 @@ pub async fn run(args: SendArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
         let spinner = if args.no_progress {
             None
         } else {
-            let spinner = output::spinner("Pairing");
-            spinner.set_message("waiting for receiver…");
-            Some(spinner)
+            Some(output::spinner("Pairing", "waiting for receiver…"))
         };
         let incoming = endpoint
             .wait_incoming()
@@ -120,7 +116,7 @@ pub async fn run(args: SendArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
             }
         };
         if let Some(spinner) = &spinner {
-            spinner.set_message("receiver connected");
+            output::spinner_update(spinner, "Pairing", "receiver connected");
         }
         let conn_result = incoming
             .await

@@ -168,3 +168,16 @@ pub use discovery::DiscoveredPeer;
 pub use error::EngineError;
 pub use protocol::Metadata;
 pub use runner::{HayateReceiver, HayateSender};
+
+/// Encode bytes as a lowercase hex string. Replaces the external `hex` crate.
+#[inline]
+pub(crate) fn hex_encode(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        // Two lookups into a 16-char table, no formatting overhead.
+        const TABLE: &[u8; 16] = b"0123456789abcdef";
+        s.push(TABLE[(b >> 4) as usize] as char);
+        s.push(TABLE[(b & 0xf) as usize] as char);
+    }
+    s
+}

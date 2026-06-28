@@ -436,26 +436,33 @@ pub fn finish_transfer_progress(pb: &ProgressBar, total_bytes: u64) {
     pb.finish_and_clear();
 }
 
-/// Creates a spinner for indeterminate progress.
-pub fn spinner(prefix: &str) -> ProgressBar {
+/// Creates a spinner for indeterminate progress. Prefix and message are
+/// combined into a single field to avoid line-wrapping on narrow terminals.
+pub fn spinner(label: &str, detail: &str) -> ProgressBar {
     let template = if unicode_capable() {
-        "   {spinner:.cyan.bold}  {prefix:.bold}  {msg:.dim.white}"
+        "   {spinner:.cyan.bold}  {prefix:.bold}"
     } else {
-        "   {spinner}  {prefix}  {msg}"
+        "   {spinner}  {prefix}"
     };
     let style = ProgressStyle::with_template(template)
         .expect("valid template")
         .tick_chars(spinner_tick_chars());
     let pb = ProgressBar::new_spinner();
     pb.set_style(style);
-    pb.set_prefix(prefix.to_owned());
+    pb.set_prefix(format!("{label}  {detail}"));
     if is_tty() {
-        pb.set_draw_target(ProgressDrawTarget::stdout_with_hz(15));
-        pb.enable_steady_tick(std::time::Duration::from_millis(80));
+        pb.set_draw_target(ProgressDrawTarget::stdout_with_hz(10));
+        pb.enable_steady_tick(std::time::Duration::from_millis(100));
     } else {
         pb.set_draw_target(ProgressDrawTarget::hidden());
     }
     pb
+}
+
+/// Updates the detail portion of an existing spinner. Useful when the
+/// state changes (e.g., "waiting" → "receiver connected").
+pub fn spinner_update(pb: &ProgressBar, label: &str, detail: &str) {
+    pb.set_prefix(format!("{label}  {detail}"));
 }
 
 /// Creates a progress bar for network scanning with host count.
@@ -751,16 +758,74 @@ pub fn get_backend_name() -> &'static str {
     }
 }
 
-pub fn print_listener_active(addr: impl std::fmt::Display) {
+/// Prints a single "Bound" line showing the socket's bind address.
+/// Use [`print_local_addresses`] afterwards to list reachable addresses.
+pub fn print_bound(addr: impl std::fmt::Display) {
     let backend = get_backend_name();
-    let dot = if unicode_capable() { "●" } else { "*" };
+    let dot = icon_dot();
     println!(
-        "   {}  {} {} {} {} {}",
+        "   {}  {} {} · {} {}",
         style(dot).bold().green(),
-        style("Listening on").bold().white(),
+        style("Bound").bold().white(),
         style(addr.to_string()).bold().yellow(),
-        style("via").white(),
         style("QUIC").bold().magenta(),
         style(format!("[{backend}]")).bold().cyan()
+    );
+}
+
+/// Prints the cancellation hint.
+pub fn print_cancel_hint() {
+    println!(
+        "      {}  {}",
+        style("ESC / q").bold().dim(),
+        style("to exit").dim()
+    );
+}
+
+/// Prints a compact table of local addresses a peer can connect to, with
+/// the interface name alongside each address.
+pub fn print_local_addresses(addrs: &[(std::net::Ipv4Addr, String)]) {
+    if addrs.is_empty() {
+        return;
+    }
+    // Find the widest IP:port so columns align.
+    let max_ip_width = addrs
+        .iter()
+        .map(|(ip, _)| ip.to_string().len())
+        .max()
+        .unwrap_or(15);
+    let max_name_width = addrs.iter().map(|(_, name)| name.len()).max().unwrap_or(8);
+
+    let inner = max_ip_width + max_name_width + 7; // "  ● " + "  " + padding
+    let v = box_v();
+    let dot = icon_dot();
+
+    // Top border
+    println!(
+        "   {}{}{}",
+        style(box_tl()).dim(),
+        style(box_line(inner)).dim(),
+        style(box_tr()).dim()
+    );
+    for (ip, name) in addrs {
+        let ip_pad = " ".repeat(max_ip_width.saturating_sub(ip.to_string().len()));
+        let name_pad = " ".repeat(max_name_width.saturating_sub(name.len()));
+        println!(
+            "   {}  {} {}{} {}{}  {}",
+            style(v).dim(),
+            style(dot).green(),
+            style(ip).yellow().bold(),
+            style(ip_pad).dim(),
+            style(name).dim(),
+            style(name_pad).dim(),
+            style(v).dim()
+        );
+    }
+    // Bottom border
+    println!(
+        "   {}{}{}",
+        style(box_bl()).dim(),
+        style(box_line(inner)).dim(),
+        style(box_br()).dim()
     );
 }

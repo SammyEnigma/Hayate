@@ -45,15 +45,13 @@ tar = { workspace = true }
 walkdir = { workspace = true }
 
 # Local network utilities.
-get_if_addrs = { workspace = true }
-local-ip-address = { workspace = true }
+if-addrs = { workspace = true }
 socket2 = { workspace = true }
 
 # Compression, channels, and errors.
 flume = { workspace = true }
 mdns-sd = { workspace = true }
 zstd = { workspace = true }
-hex = { workspace = true }
 thiserror = { workspace = true }
 blake3 = { workspace = true }
 rapidhash = { workspace = true }

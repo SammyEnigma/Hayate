@@ -28,13 +28,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 /// ```
 #[must_use]
 pub fn local_ipv4s() -> Vec<Ipv4Addr> {
-    let mut ips = local_ip_address_ipv4s();
-
-    for ip in interface_ipv4s() {
-        if !ips.contains(&ip) {
-            ips.push(ip);
-        }
-    }
+    let mut ips = interface_ipv4s();
 
     for ip in route_probe_ipv4s() {
         if !ips.contains(&ip) {
@@ -108,26 +102,23 @@ pub fn primary_local_ipv4() -> Option<Ipv4Addr> {
 /// ```
 #[must_use]
 pub fn is_local_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ipv4) => local_ipv4s().contains(&ipv4),
-        IpAddr::V6(_) => {
-            if let Ok(ifaces) = get_if_addrs::get_if_addrs() {
-                return ifaces.into_iter().any(|iface| iface.ip() == ip);
-            }
-            false
-        }
+    if let Ok(ifaces) = if_addrs::get_if_addrs() {
+        return ifaces
+            .into_iter()
+            .any(|iface| !iface.is_loopback() && iface.ip() == ip);
     }
+    false
 }
 
 /// Queries network interfaces for IPv4 addresses.
 fn interface_ipv4s() -> Vec<Ipv4Addr> {
     let mut ips = Vec::new();
-    if let Ok(ifaces) = get_if_addrs::get_if_addrs() {
+    if let Ok(ifaces) = if_addrs::get_if_addrs() {
         for iface in ifaces {
             if iface.is_loopback() {
                 continue;
             }
-            if let get_if_addrs::IfAddr::V4(ifv4) = iface.addr
+            if let if_addrs::IfAddr::V4(ifv4) = iface.addr
                 && is_usable_local_ipv4(ifv4.ip)
                 && !ips.contains(&ifv4.ip)
             {
@@ -135,30 +126,6 @@ fn interface_ipv4s() -> Vec<Ipv4Addr> {
             }
         }
     }
-    ips
-}
-
-/// Queries using the `local-ip-address` library for IPv4 addresses.
-fn local_ip_address_ipv4s() -> Vec<Ipv4Addr> {
-    let mut ips = Vec::new();
-
-    if let Ok(IpAddr::V4(ip)) = local_ip_address::local_ip()
-        && is_usable_local_ipv4(ip)
-    {
-        ips.push(ip);
-    }
-
-    if let Ok(ifaces) = local_ip_address::list_afinet_netifas() {
-        for (_name, ip) in ifaces {
-            let IpAddr::V4(ip) = ip else {
-                continue;
-            };
-            if is_usable_local_ipv4(ip) && !ips.contains(&ip) {
-                ips.push(ip);
-            }
-        }
-    }
-
     ips
 }
 

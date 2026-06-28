@@ -53,7 +53,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Shared cancellation flag for graceful shutdown on Ctrl+C.
+    // Shared cancellation flag for graceful shutdown (Ctrl+C).
     let cancelled = Arc::new(AtomicBool::new(false));
     let cancelled_clone = Arc::clone(&cancelled);
 

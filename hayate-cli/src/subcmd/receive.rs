@@ -21,15 +21,19 @@ use hayate::{
 use crate::{cli::ReceiveArgs, output};
 
 pub async fn run(args: ReceiveArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
+    // ESC / q listener — polls tty in raw mode, exits cleanly via cancelled flag.
+    spawn_esc_listener(Arc::clone(&cancelled));
+
     if let Some(code) = &args.code {
         // ── Pairing-code mode ────────────────────────────────────────
         output::stage("pairing", format!("scanning for code \"{code}\""));
         let spinner = if args.no_progress {
             None
         } else {
-            let s = output::spinner("Discovering");
-            s.set_message("listening for sender broadcast…");
-            Some(s)
+            Some(output::spinner(
+                "Discovering",
+                "listening for sender broadcast…",
+            ))
         };
 
         if cancelled.load(Ordering::SeqCst) {
@@ -60,9 +64,7 @@ pub async fn run(args: ReceiveArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
         let spinner = if args.no_progress {
             None
         } else {
-            let spinner = output::spinner("Connecting");
-            spinner.set_message(peer_addr.to_string());
-            Some(spinner)
+            Some(output::spinner("Connecting", &peer_addr.to_string()))
         };
         let conn_result: Result<_> =
             match endpoint.connect(peer_addr, "hayate.local", Some(client_config)) {
@@ -195,25 +197,41 @@ pub async fn run(args: ReceiveArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
     let bind_addr = SocketAddr::new(args.bind, args.port);
     let endpoint = network::bind_server(bind_addr).await?;
     let local_port = endpoint.local_addr()?.port();
+
     if bind_addr.ip().is_unspecified() {
+        // Single bound line + compact interface table so the user knows
+        // which addresses peers can connect to, without looking like we
+        // started multiple servers.
+        output::print_bound(format!("0.0.0.0:{local_port}"));
         let ips = local_addr::local_ipv4s();
-        if ips.is_empty() {
-            output::print_listener_active(format!("127.0.0.1:{local_port}"));
-        } else {
-            for ip in ips {
-                output::print_listener_active(format!("{ip}:{local_port}"));
-            }
+        if !ips.is_empty() {
+            let addrs_with_names: Vec<_> = ips
+                .into_iter()
+                .map(|ip| {
+                    // Try to find the interface name for each IP.
+                    let name = if_addrs::get_if_addrs()
+                        .ok()
+                        .and_then(|ifaces| {
+                            ifaces
+                                .into_iter()
+                                .find(|iface| iface.ip() == std::net::IpAddr::V4(ip))
+                        })
+                        .map(|iface| iface.name)
+                        .unwrap_or_default();
+                    (ip, name)
+                })
+                .collect();
+            output::print_local_addresses(&addrs_with_names);
         }
+        output::print_cancel_hint();
     } else {
-        output::print_listener_active(endpoint.local_addr()?);
+        output::print_bound(endpoint.local_addr()?);
     }
 
     let mut spinner = if args.no_progress {
         None
     } else {
-        let s = output::spinner("Waiting");
-        s.set_message("for incoming connection…");
-        Some(s)
+        Some(output::spinner("Waiting", "for incoming connection…"))
     };
 
     loop {
@@ -221,15 +239,19 @@ pub async fn run(args: ReceiveArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
             break;
         }
 
-        let incoming = match endpoint.wait_incoming().await {
-            Some(i) => {
-                if let Some(s) = &spinner {
-                    s.finish_and_clear();
+        // Wait with a 500 ms timeout so the cancelled flag is polled.
+        let incoming =
+            match compio::time::timeout(Duration::from_millis(500), endpoint.wait_incoming()).await
+            {
+                Ok(Some(i)) => {
+                    if let Some(s) = &spinner {
+                        s.finish_and_clear();
+                    }
+                    i
                 }
-                i
-            }
-            None => break,
-        };
+                Ok(None) => break,
+                Err(_timeout) => continue,
+            };
         let conn = match incoming.await {
             Ok(c) => c,
             Err(e) => {
@@ -397,9 +419,10 @@ fn respawn_spinner(no_progress: bool) -> Option<indicatif::ProgressBar> {
     if no_progress {
         None
     } else {
-        let s = crate::output::spinner("Waiting");
-        s.set_message("for incoming connection…");
-        Some(s)
+        Some(crate::output::spinner(
+            "Waiting",
+            "for incoming connection…",
+        ))
     }
 }
 
@@ -515,4 +538,32 @@ fn resolve_output(output_dir: &std::path::Path, meta: &Metadata) -> Result<PathB
         .file_name()
         .unwrap_or_else(|| std::ffi::OsStr::new("received_file"));
     Ok(output_dir.join(name))
+}
+
+// ── ESC / q listener ─────────────────────────────────────────────────────
+
+fn spawn_esc_listener(cancelled: Arc<AtomicBool>) {
+    std::thread::spawn(move || {
+        use crossterm::event::{Event, KeyCode, KeyModifiers, poll, read};
+        loop {
+            if cancelled.load(Ordering::SeqCst) {
+                break;
+            }
+            if crossterm::terminal::enable_raw_mode().is_ok() {
+                if poll(std::time::Duration::from_millis(0)).is_ok_and(|b| b)
+                    && let Ok(Event::Key(k)) = read()
+                {
+                    let exit = matches!(
+                        k.code,
+                        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q')
+                    );
+                    if exit && !k.modifiers.contains(KeyModifiers::CONTROL) {
+                        cancelled.store(true, Ordering::SeqCst);
+                    }
+                }
+                let _ = crossterm::terminal::disable_raw_mode();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    });
 }

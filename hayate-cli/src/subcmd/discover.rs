@@ -108,15 +108,14 @@ pub async fn run(args: DiscoverArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
                     pb_ref.inc(1);
                     if let Some(oc) = outcome {
                         let key = format!("{}-{}", oc.resolved_ip, oc.addr.port());
-                        let mut already_seen = false;
-                        if let Ok(mut set) = seen.lock() {
-                            if set.contains(&key) {
-                                already_seen = true;
-                            } else {
-                                set.insert(key);
-                            }
+                        let mut is_new = false;
+                        if let Ok(mut set) = seen.lock()
+                            && !set.contains(&key)
+                        {
+                            set.insert(key);
+                            is_new = true;
                         }
-                        if !already_seen {
+                        if is_new {
                             let n = found_ref.fetch_add(1, Ordering::Relaxed) + 1;
                             pb_ref.set_message(format!("{n} peer(s) found"));
                             let _ = result_tx.send_async(oc).await;
@@ -213,6 +212,8 @@ fn detect_all_subnets() -> Vec<Ipv4Addr> {
 // ---------------------------------------------------------------------------
 
 /// Probes a single host, measuring round-trip time via the QUIC handshake.
+/// Per-probe endpoint creation is acceptable because TLS config is cached
+/// (OnceLock in `network.rs`) and UDP socket bind is sub-millisecond.
 async fn probe_one_with_rtt(addr: SocketAddr, timeout: Duration) -> Option<ProbeOutcome> {
     let start = Instant::now();
     let result = compio::time::timeout(timeout, async move {

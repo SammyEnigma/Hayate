@@ -101,7 +101,7 @@ impl PayloadHasher {
                 let _ = write!(s, "{:016x}", h.finish());
                 s
             }
-            Self::Sha256(h) => hex::encode(h.finish().as_ref()),
+            Self::Sha256(h) => crate::hex_encode(h.finish().as_ref()),
         };
         format!("{algo}${hex_hash}")
     }
