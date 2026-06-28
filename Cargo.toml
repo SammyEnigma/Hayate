@@ -67,9 +67,6 @@ codegen-units = 1
 panic = "abort"
 strip = true
 
-[profile.release-full]
-inherits = "release"
-
 [profile.dev]
 opt-level = 0
 debug = true

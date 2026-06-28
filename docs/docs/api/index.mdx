@@ -15,23 +15,23 @@ description: Complete reference for the Hayate CLI, Rust library API, and integr
 
 ### Core types
 
-| Type | Module | Description |
-|------|--------|-------------|
-| `HayateSender` | `hayate::runner` | Builder for sending files/directories |
-| `HayateReceiver` | `hayate::runner` | Builder for receiving files/directories |
-| `EngineError` | `hayate::error` | Top-level error enum |
-| `Metadata` | `hayate::protocol` | Transfer metadata (filename, size, hash algo) |
-| `BufferPool` | `hayate::pool` | Thread-safe zero-alloc buffer leasing |
+| Type             | Module             | Description                                   |
+| ---------------- | ------------------ | --------------------------------------------- |
+| `HayateSender`   | `hayate::runner`   | Builder for sending files/directories         |
+| `HayateReceiver` | `hayate::runner`   | Builder for receiving files/directories       |
+| `EngineError`    | `hayate::error`    | Top-level error enum                          |
+| `Metadata`       | `hayate::protocol` | Transfer metadata (filename, size, hash algo) |
+| `BufferPool`     | `hayate::pool`     | Thread-safe zero-alloc buffer leasing         |
 
 ### Public modules
 
-| Module | Purpose |
-|--------|---------|
-| `hayate::runner` | High-level sender/receiver builders |
-| `hayate::transfer` | Handshake and payload pipelines |
-| `hayate::protocol` | Wire format constants and codecs |
-| `hayate::crypto` | Key exchange, HKDF, AEAD |
-| `hayate::network` | QUIC endpoint and TLS config |
-| `hayate::discovery` | mDNS + UDP peer discovery |
-| `hayate::tar` | Streaming archive pack/extract |
-| `hayate::error` | Error types |
+| Module              | Purpose                             |
+| ------------------- | ----------------------------------- |
+| `hayate::runner`    | High-level sender/receiver builders |
+| `hayate::transfer`  | Handshake and payload pipelines     |
+| `hayate::protocol`  | Wire format constants and codecs    |
+| `hayate::crypto`    | Key exchange, HKDF, AEAD            |
+| `hayate::network`   | QUIC endpoint and TLS config        |
+| `hayate::discovery` | mDNS + UDP peer discovery           |
+| `hayate::tar`       | Streaming archive pack/extract      |
+| `hayate::error`     | Error types                         |

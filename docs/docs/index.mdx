@@ -4,39 +4,39 @@ title: Hayate - Swift, Secure, Encrypted, & Compressed Local File Transfer over 
 description: Standalone completion-based transfer engine and CLI built on QUIC (io_uring/IOCP). Saturation-level LAN file sharing with auto-discovery and Ephemeral X25519 agreements.
 ---
 
-import { useState } from 'react';
+import { useState } from "react";
 
 export function InstallCard({ title, icon, command }) {
   const [copied, setCopied] = useState(false);
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(command);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
+const handleCopy = () => {
+navigator.clipboard.writeText(command);
+setCopied(true);
+setTimeout(() => setCopied(false), 2000);
+};
 
-  return (
-    <div style={{
+return (
+<div style={{
       border: '1px solid var(--rp-c-divider)',
       borderRadius: '12px',
       padding: '24px',
       background: 'var(--rp-c-bg-soft)',
       textAlign: 'left'
     }}>
-      <h3 style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '1.25rem', fontWeight: '700', marginBottom: '12px', color: 'var(--rp-c-text-1)', marginTop: '0' }}>
-        {icon}
-        {title}
-      </h3>
-      <p style={{ color: 'var(--rp-c-text-2)', fontSize: '0.9rem', marginBottom: '16px' }}>
-        Execute this command in your terminal:
-      </p>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', background: 'var(--rp-c-bg-mute)', border: '1px solid var(--rp-c-divider-light)', padding: '12px 16px', borderRadius: '8px', position: 'relative' }}>
-        <code style={{ fontSize: '0.85rem', color: 'var(--rp-c-text-1)', fontFamily: 'var(--rp-c-font-mono)', overflowX: 'auto', whiteSpace: 'nowrap', flex: 1, paddingRight: '40px' }}>
-          {command}
-        </code>
-        <button
-          onClick={handleCopy}
-          style={{
+<h3 style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '1.25rem', fontWeight: '700', marginBottom: '12px', color: 'var(--rp-c-text-1)', marginTop: '0' }}>
+{icon}
+{title}
+</h3>
+<p style={{ color: 'var(--rp-c-text-2)', fontSize: '0.9rem', marginBottom: '16px' }}>
+Execute this command in your terminal:
+</p>
+<div style={{ display: 'flex', alignItems: 'center', gap: '10px', background: 'var(--rp-c-bg-mute)', border: '1px solid var(--rp-c-divider-light)', padding: '12px 16px', borderRadius: '8px', position: 'relative' }}>
+<code style={{ fontSize: '0.85rem', color: 'var(--rp-c-text-1)', fontFamily: 'var(--rp-c-font-mono)', overflowX: 'auto', whiteSpace: 'nowrap', flex: 1, paddingRight: '40px' }}>
+{command}
+</code>
+<button
+onClick={handleCopy}
+style={{
             position: 'absolute',
             right: '12px',
             top: '50%',
@@ -52,20 +52,20 @@ export function InstallCard({ title, icon, command }) {
             color: 'var(--rp-c-text-2)',
             transition: 'all 0.2s'
           }}
-          title="Copy command"
-        >
-          {copied ? (
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-          ) : (
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-          )}
-        </button>
-      </div>
-    </div>
-  );
+title="Copy command" >
+{copied ? (
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+) : (
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+)}
+</button>
+</div>
+</div>
+);
 }
 
 {/* Custom Hero Section */}
+
 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', padding: '6rem 1.5rem 3rem 1.5rem', maxWidth: '800px', margin: '0 auto', position: 'relative' }}>
   <div className="saas-orb-1"></div>
   <div className="saas-orb-2"></div>
@@ -100,7 +100,8 @@ export function InstallCard({ title, icon, command }) {
     </a>
   </div>
 
-  {/* Curvy badge links to docs.rs, crates.io, and Github */}
+{/* Curvy badge links to docs.rs, crates.io, and Github */}
+
   <div style={{ display: 'flex', justifyContent: 'center', gap: '12px', flexWrap: 'wrap' }}>
     <a href="https://github.com/ShiinaSaku/Hayate" target="_blank" rel="noopener noreferrer" className="crate-badge">
       <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>
@@ -117,9 +118,8 @@ export function InstallCard({ title, icon, command }) {
   </div>
 </div>
 
-
-
 {/* Custom Features Section with SVG Icons */}
+
 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '24px', maxWidth: '1000px', margin: '4rem auto 0 auto', padding: '0 1.5rem' }}>
   
   <div className="rspress-home-feature rp-home-feature" style={{ padding: '24px', background: 'var(--rp-c-bg-soft)', borderRadius: '12px', border: '1px solid var(--rp-c-divider)' }}>
@@ -132,59 +132,263 @@ export function InstallCard({ title, icon, command }) {
     </p>
   </div>
 
-  <div className="rspress-home-feature rp-home-feature" style={{ padding: '24px', background: 'var(--rp-c-bg-soft)', borderRadius: '12px', border: '1px solid var(--rp-c-divider)' }}>
-    <div style={{ fontSize: '2rem', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--rp-c-text-1)' }}>
-      <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-    </div>
-    <h3 style={{ fontSize: '1.25rem', fontWeight: '700', marginBottom: '8px', color: 'var(--rp-c-text-1)' }}>QUIC-Native Transport</h3>
-    <p style={{ color: 'var(--rp-c-text-2)', fontSize: '0.9rem', lineHeight: '1.5', margin: '0' }}>
-      Directly utilizes the QUIC transport protocol (via compio-quic and quinn-proto) for reliable, low-latency packet delivery.
-    </p>
+<div
+  className="rspress-home-feature rp-home-feature"
+  style={{
+    padding: "24px",
+    background: "var(--rp-c-bg-soft)",
+    borderRadius: "12px",
+    border: "1px solid var(--rp-c-divider)",
+  }}
+>
+  <div
+    style={{
+      fontSize: "2rem",
+      marginBottom: "16px",
+      display: "flex",
+      alignItems: "center",
+      gap: "8px",
+      color: "var(--rp-c-text-1)",
+    }}
+  >
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="28"
+      height="28"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="12" cy="12" r="10" />
+      <line x1="2" y1="12" x2="22" y2="12" />
+      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+    </svg>
   </div>
+  <h3
+    style={{
+      fontSize: "1.25rem",
+      fontWeight: "700",
+      marginBottom: "8px",
+      color: "var(--rp-c-text-1)",
+    }}
+  >
+    QUIC-Native Transport
+  </h3>
+  <p style={{ color: "var(--rp-c-text-2)", fontSize: "0.9rem", lineHeight: "1.5", margin: "0" }}>
+    Directly utilizes the QUIC transport protocol (via compio-quic and quinn-proto) for reliable,
+    low-latency packet delivery.
+  </p>
+</div>
 
-  <div className="rspress-home-feature rp-home-feature" style={{ padding: '24px', background: 'var(--rp-c-bg-soft)', borderRadius: '12px', border: '1px solid var(--rp-c-divider)' }}>
-    <div style={{ fontSize: '2rem', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--rp-c-text-1)' }}>
-      <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"/></svg>
-    </div>
-    <h3 style={{ fontSize: '1.25rem', fontWeight: '700', marginBottom: '8px', color: 'var(--rp-c-text-1)' }}>Zero-Setup Discovery</h3>
-    <p style={{ color: 'var(--rp-c-text-2)', fontSize: '0.9rem', lineHeight: '1.5', margin: '0' }}>
-      Discover peers across the LAN instantly with mDNS + UDP broadcast — no IP addresses, no configuration. Works on Android, macOS, Linux, and Windows.
-    </p>
+<div
+  className="rspress-home-feature rp-home-feature"
+  style={{
+    padding: "24px",
+    background: "var(--rp-c-bg-soft)",
+    borderRadius: "12px",
+    border: "1px solid var(--rp-c-divider)",
+  }}
+>
+  <div
+    style={{
+      fontSize: "2rem",
+      marginBottom: "16px",
+      display: "flex",
+      alignItems: "center",
+      gap: "8px",
+      color: "var(--rp-c-text-1)",
+    }}
+  >
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="28"
+      height="28"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="12" cy="12" r="2" />
+      <path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14" />
+    </svg>
   </div>
+  <h3
+    style={{
+      fontSize: "1.25rem",
+      fontWeight: "700",
+      marginBottom: "8px",
+      color: "var(--rp-c-text-1)",
+    }}
+  >
+    Zero-Setup Discovery
+  </h3>
+  <p style={{ color: "var(--rp-c-text-2)", fontSize: "0.9rem", lineHeight: "1.5", margin: "0" }}>
+    Discover peers across the LAN instantly with mDNS + UDP broadcast — no IP addresses, no
+    configuration. Works on Android, macOS, Linux, and Windows.
+  </p>
+</div>
 
-  <div className="rspress-home-feature rp-home-feature" style={{ padding: '24px', background: 'var(--rp-c-bg-soft)', borderRadius: '12px', border: '1px solid var(--rp-c-divider)' }}>
-    <div style={{ fontSize: '2rem', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--rp-c-text-1)' }}>
-      <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 11 11 13 15 9"/></svg>
-    </div>
-    <h3 style={{ fontSize: '1.25rem', fontWeight: '700', marginBottom: '8px', color: 'var(--rp-c-text-1)' }}>Hardware Encryption</h3>
-    <p style={{ color: 'var(--rp-c-text-2)', fontSize: '0.9rem', lineHeight: '1.5', margin: '0' }}>
-      Authenticated encryption with AES-256-GCM (hardware-accelerated) and ChaCha20-Poly1305, coupled with X25519 key exchange.
-    </p>
+<div
+  className="rspress-home-feature rp-home-feature"
+  style={{
+    padding: "24px",
+    background: "var(--rp-c-bg-soft)",
+    borderRadius: "12px",
+    border: "1px solid var(--rp-c-divider)",
+  }}
+>
+  <div
+    style={{
+      fontSize: "2rem",
+      marginBottom: "16px",
+      display: "flex",
+      alignItems: "center",
+      gap: "8px",
+      color: "var(--rp-c-text-1)",
+    }}
+  >
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="28"
+      height="28"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+      <polyline points="9 11 11 13 15 9" />
+    </svg>
   </div>
+  <h3
+    style={{
+      fontSize: "1.25rem",
+      fontWeight: "700",
+      marginBottom: "8px",
+      color: "var(--rp-c-text-1)",
+    }}
+  >
+    Hardware Encryption
+  </h3>
+  <p style={{ color: "var(--rp-c-text-2)", fontSize: "0.9rem", lineHeight: "1.5", margin: "0" }}>
+    Authenticated encryption with AES-256-GCM (hardware-accelerated) and ChaCha20-Poly1305, coupled
+    with X25519 key exchange.
+  </p>
+</div>
 
-  <div className="rspress-home-feature rp-home-feature" style={{ padding: '24px', background: 'var(--rp-c-bg-soft)', borderRadius: '12px', border: '1px solid var(--rp-c-divider)' }}>
-    <div style={{ fontSize: '2rem', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--rp-c-text-1)' }}>
-      <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v2"/><path d="M12 14v-4h4"/><path d="M22 14a8 8 0 1 1-6.8-6.8L22 14z"/></svg>
-    </div>
-    <h3 style={{ fontSize: '1.25rem', fontWeight: '700', marginBottom: '8px', color: 'var(--rp-c-text-1)' }}>Streamed Directories</h3>
-    <p style={{ color: 'var(--rp-c-text-2)', fontSize: '0.9rem', lineHeight: '1.5', margin: '0' }}>
-      Transfer folders on the fly using zero-overhead streaming tar serialization, featuring strict path-traversal mitigation.
-    </p>
+<div
+  className="rspress-home-feature rp-home-feature"
+  style={{
+    padding: "24px",
+    background: "var(--rp-c-bg-soft)",
+    borderRadius: "12px",
+    border: "1px solid var(--rp-c-divider)",
+  }}
+>
+  <div
+    style={{
+      fontSize: "2rem",
+      marginBottom: "16px",
+      display: "flex",
+      alignItems: "center",
+      gap: "8px",
+      color: "var(--rp-c-text-1)",
+    }}
+  >
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="28"
+      height="28"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M9 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v2" />
+      <path d="M12 14v-4h4" />
+      <path d="M22 14a8 8 0 1 1-6.8-6.8L22 14z" />
+    </svg>
   </div>
+  <h3
+    style={{
+      fontSize: "1.25rem",
+      fontWeight: "700",
+      marginBottom: "8px",
+      color: "var(--rp-c-text-1)",
+    }}
+  >
+    Streamed Directories
+  </h3>
+  <p style={{ color: "var(--rp-c-text-2)", fontSize: "0.9rem", lineHeight: "1.5", margin: "0" }}>
+    Transfer folders on the fly using zero-overhead streaming tar serialization, featuring strict
+    path-traversal mitigation.
+  </p>
+</div>
 
-  <div className="rspress-home-feature rp-home-feature" style={{ padding: '24px', background: 'var(--rp-c-bg-soft)', borderRadius: '12px', border: '1px solid var(--rp-c-divider)' }}>
-    <div style={{ fontSize: '2rem', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--rp-c-text-1)' }}>
-      <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
-    </div>
-    <h3 style={{ fontSize: '1.25rem', fontWeight: '700', marginBottom: '8px', color: 'var(--rp-c-text-1)' }}>Smart Compression</h3>
-    <p style={{ color: 'var(--rp-c-text-2)', fontSize: '0.9rem', lineHeight: '1.5', margin: '0' }}>
-      Automatic Zstd compression that auto-skips pre-compressed formats (archives, media, images) to save host CPU cycles.
-    </p>
+<div
+  className="rspress-home-feature rp-home-feature"
+  style={{
+    padding: "24px",
+    background: "var(--rp-c-bg-soft)",
+    borderRadius: "12px",
+    border: "1px solid var(--rp-c-divider)",
+  }}
+>
+  <div
+    style={{
+      fontSize: "2rem",
+      marginBottom: "16px",
+      display: "flex",
+      alignItems: "center",
+      gap: "8px",
+      color: "var(--rp-c-text-1)",
+    }}
+  >
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="28"
+      height="28"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <polyline points="21 8 21 21 3 21 3 8" />
+      <rect x="1" y="3" width="22" height="5" />
+      <line x1="10" y1="12" x2="14" y2="12" />
+    </svg>
   </div>
+  <h3
+    style={{
+      fontSize: "1.25rem",
+      fontWeight: "700",
+      marginBottom: "8px",
+      color: "var(--rp-c-text-1)",
+    }}
+  >
+    Smart Compression
+  </h3>
+  <p style={{ color: "var(--rp-c-text-2)", fontSize: "0.9rem", lineHeight: "1.5", margin: "0" }}>
+    Automatic Zstd compression that auto-skips pre-compressed formats (archives, media, images) to
+    save host CPU cycles.
+  </p>
+</div>
 
 </div>
 
 {/* Installation Section */}
+
 <div style={{ maxWidth: '1000px', margin: '4rem auto 4rem auto', padding: '0 1.5rem' }}>
   <h2 style={{ textAlign: 'center', fontSize: '2rem', fontWeight: '800', marginBottom: '2rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', color: 'var(--rp-c-text-1)' }}>
     <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
@@ -195,18 +399,56 @@ export function InstallCard({ title, icon, command }) {
     Get up and running instantly with our hosted installation scripts. Click to copy and run.
   </p>
 
-  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '24px', marginBottom: '3rem' }}>
-    <InstallCard 
-      title="macOS & Linux" 
-      icon={<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>}
-      command="curl -sSf https://shiinasaku.github.io/Hayate/install.sh | bash"
-    />
-    <InstallCard 
-      title="Windows (PowerShell)" 
-      icon={<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>}
-      command="irm https://shiinasaku.github.io/Hayate/install.ps1 | iex"
-    />
-  </div>
+<div
+  style={{
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+    gap: "24px",
+    marginBottom: "3rem",
+  }}
+>
+  <InstallCard
+    title="macOS & Linux"
+    icon={
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        width="20"
+        height="20"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <polyline points="4 17 10 11 4 5" />
+        <line x1="12" y1="19" x2="20" y2="19" />
+      </svg>
+    }
+    command="curl -sSf https://shiinasaku.github.io/Hayate/install.sh | bash"
+  />
+  <InstallCard
+    title="Windows (PowerShell)"
+    icon={
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        width="20"
+        height="20"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+        <line x1="8" y1="21" x2="16" y2="21" />
+        <line x1="12" y1="17" x2="12" y2="21" />
+      </svg>
+    }
+    command="irm https://shiinasaku.github.io/Hayate/install.ps1 | iex"
+  />
+</div>
 
   <div style={{ display: 'flex', justifyContent: 'center', gap: '16px', marginTop: '3rem' }}>
     <a href="/Hayate/guide/getting-started" className="custom-btn custom-btn-primary">

@@ -16,6 +16,12 @@ publish = false
 [package.metadata.dist]
 dist = true
 
+[package.metadata.wix]
+upgrade-guid = "6DF64A3F-ED31-405A-A678-5515B5E6BDC5"
+path-guid = "31978D25-8C07-41E3-994C-62AE441D1918"
+license = false
+eula = false
+
 [lints]
 workspace = true
 

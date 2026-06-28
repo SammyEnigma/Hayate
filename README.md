@@ -40,16 +40,17 @@ Built on **QUIC** + **io_uring** / **IOCP** — the same kernel primitives that 
 
 ## Why Hayate?
 
-| Tool | Transport | Discovery | Encryption | Android |
-|------|-----------|-----------|------------|---------|
-| `scp`/`rsync` | TCP/SSH | Manual IP only | SSH | No |
-| Magic Wormhole | TCP/TLS | Rendezvous server | PAKE | Via Python |
-| LocalSend | HTTP/HTTPS | mDNS | TLS | Yes |
-| **Hayate** | **QUIC** | **mDNS + UDP** | **X25519 + AEAD** | **Yes** |
+| Tool           | Transport  | Discovery         | Encryption        | Android    |
+| -------------- | ---------- | ----------------- | ----------------- | ---------- |
+| `scp`/`rsync`  | TCP/SSH    | Manual IP only    | SSH               | No         |
+| Magic Wormhole | TCP/TLS    | Rendezvous server | PAKE              | Via Python |
+| LocalSend      | HTTP/HTTPS | mDNS              | TLS               | Yes        |
+| **Hayate**     | **QUIC**   | **mDNS + UDP**    | **X25519 + AEAD** | **Yes**    |
 
 Hayate is the only tool that combines QUIC transport, automatic LAN peer discovery without a rendezvous server, hardware-accelerated AEAD encryption, and native Android support — all in a single 15MB binary.
 
 **Feature highlights:**
+
 - **QUIC transport** — 0-RTT handshakes, multiplexed streams, no head-of-line blocking
 - **mDNS + UDP discovery** — peers on macOS, Linux, Windows, Android find each other automatically
 - **X25519 + HKDF** key exchange with optional passphrase salting
@@ -146,32 +147,32 @@ hayate receive --code "forest-river-mountain" --output ./downloads/
 
 ### `hayate receive`
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `-b, --bind` | IP to bind | `0.0.0.0` |
-| `-p, --port` | UDP port | `50001` |
-| `-o, --output` | Save directory | `.` |
-| `--auto-accept` | Skip confirmation prompt | off |
-| `--code` | Pairing code phrase | none |
-| `--no-progress` | Disable progress bar | off |
+| Flag            | Description              | Default   |
+| --------------- | ------------------------ | --------- |
+| `-b, --bind`    | IP to bind               | `0.0.0.0` |
+| `-p, --port`    | UDP port                 | `50001`   |
+| `-o, --output`  | Save directory           | `.`       |
+| `--auto-accept` | Skip confirmation prompt | off       |
+| `--code`        | Pairing code phrase      | none      |
+| `--no-progress` | Disable progress bar     | off       |
 
 ### `hayate send`
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `PATH` | File or directory to send | required |
-| `TARGET` | Receiver `ip:port` | optional |
-| `--code` | Pairing code phrase | auto-generated |
-| `-z, --compress` | Zstd compression | on |
-| `--hash` | Integrity algorithm (`blake3`, `rapidhash`, `sha256`) | `blake3` |
-| `--no-progress` | Disable progress bar | off |
+| Flag             | Description                                           | Default        |
+| ---------------- | ----------------------------------------------------- | -------------- |
+| `PATH`           | File or directory to send                             | required       |
+| `TARGET`         | Receiver `ip:port`                                    | optional       |
+| `--code`         | Pairing code phrase                                   | auto-generated |
+| `-z, --compress` | Zstd compression                                      | on             |
+| `--hash`         | Integrity algorithm (`blake3`, `rapidhash`, `sha256`) | `blake3`       |
+| `--no-progress`  | Disable progress bar                                  | off            |
 
 ### `hayate discover`
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `-t, --timeout` | Scan timeout (seconds) | `15` |
-| `--cidr` | Subnet to scan (e.g. `192.168.1.0/24`) | auto |
+| Flag            | Description                            | Default |
+| --------------- | -------------------------------------- | ------- |
+| `-t, --timeout` | Scan timeout (seconds)                 | `15`    |
+| `--cidr`        | Subnet to scan (e.g. `192.168.1.0/24`) | auto    |
 
 ---
 
@@ -179,14 +180,14 @@ hayate receive --code "forest-river-mountain" --output ./downloads/
 
 Hayate builds its trust model at the application layer on top of QUIC's transport encryption.
 
-| Layer | Primitive |
-|-------|-----------|
-| Key agreement | X25519 ECDH (ephemeral, forward-secret) |
-| Key derivation | HKDF-SHA256 with passphrase as optional salt |
-| Frame encryption | AES-256-GCM (hardware-accelerated) or ChaCha20-Poly1305 |
-| Integrity | Blake3 / RapidHash / SHA-256 stream hash |
+| Layer            | Primitive                                                          |
+| ---------------- | ------------------------------------------------------------------ |
+| Key agreement    | X25519 ECDH (ephemeral, forward-secret)                            |
+| Key derivation   | HKDF-SHA256 with passphrase as optional salt                       |
+| Frame encryption | AES-256-GCM (hardware-accelerated) or ChaCha20-Poly1305            |
+| Integrity        | Blake3 / RapidHash / SHA-256 stream hash                           |
 | Directory safety | Path-traversal rejection (no `..`, no symlinks, no absolute paths) |
-| Metadata | Filename and size encrypted before transmission |
+| Metadata         | Filename and size encrypted before transmission                    |
 
 > **Pairing mode**: only peers who know the exact code phrase can derive the session key. **Direct mode**: relies on network locality (no passphrase).
 

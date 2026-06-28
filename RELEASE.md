@@ -53,6 +53,7 @@ Push to master.
 Within 30 seconds of pushing, the `Release` workflow creates a PR on a branch like `release-plz-2026-06-28-012345`.
 
 The PR title looks like:
+
 > chore: release v5.2.0
 
 The PR body contains an auto-generated changelog from your commit messages.
@@ -65,10 +66,12 @@ The PR body contains an auto-generated changelog from your commit messages.
 ## [5.2.0] - 2026-06-28
 
 ### Added
+
 - Streaming support for stdin/stdout transfers
 - `--quiet` flag to suppress all non-error output
 
 ### Fixed
+
 - Memory leak in BufferPool when channel sender disconnects mid-transfer
 - Windows terminal detection failing on ConPTY hosts
 ```
@@ -80,6 +83,7 @@ The version bump in `Cargo.toml` and `Cargo.lock` is handled automatically.
 Click **Merge pull request** on the release-plz PR. That's it.
 
 After merge:
+
 - **~2 minutes**: `hayate` appears on crates.io at the new version
 - **~12 minutes**: GitHub Release appears with binaries for all 8 platforms
 - **~15 minutes**: install scripts (`install.sh`, `install.ps1`) are live on GitHub Pages
@@ -101,13 +105,13 @@ curl -sSf https://shiinasaku.github.io/Hayate/install.sh | bash
 
 ## What NOT to do
 
-| Don't | Why |
-|-------|-----|
-| Force-push tags | Breaks running dist workflows with "ref does not point to expected commit" |
-| Delete and re-create tags | Same reason — let the pipeline finish |
-| Manually bump `Cargo.toml` version | release-plz handles this. Manual bumps cause merge conflicts with the release PR |
-| Edit the release-plz PR branch directly | Always edit via the PR on GitHub |
-| Merge two release PRs at once | Only one release at a time. Merge, wait for completion, then push more commits for the next |
+| Don't                                   | Why                                                                                         |
+| --------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Force-push tags                         | Breaks running dist workflows with "ref does not point to expected commit"                  |
+| Delete and re-create tags               | Same reason — let the pipeline finish                                                       |
+| Manually bump `Cargo.toml` version      | release-plz handles this. Manual bumps cause merge conflicts with the release PR            |
+| Edit the release-plz PR branch directly | Always edit via the PR on GitHub                                                            |
+| Merge two release PRs at once           | Only one release at a time. Merge, wait for completion, then push more commits for the next |
 
 ---
 
@@ -142,9 +146,9 @@ version = "5.1.0"
 
 `hayate` and `hayate-cli` use `version.workspace = true` — they always stay in lockstep. This is the standard pattern for monorepos with one published crate and one companion binary.
 
-| Crate | Published? | Version source |
-|-------|-----------|---------------|
-| `hayate` (lib) | crates.io | `workspace.package.version` |
+| Crate              | Published?             | Version source              |
+| ------------------ | ---------------------- | --------------------------- |
+| `hayate` (lib)     | crates.io              | `workspace.package.version` |
 | `hayate-cli` (bin) | No (`publish = false`) | `workspace.package.version` |
 
 ---
@@ -153,12 +157,12 @@ version = "5.1.0"
 
 Every release creates these files on the GitHub Release page:
 
-| File | Description |
-|------|-------------|
+| File                         | Description                          |
+| ---------------------------- | ------------------------------------ |
 | `hayate-cli-{target}.tar.xz` | Binary for each platform (8 targets) |
-| `hayate-cli-{target}.zip` | Same, for Windows MSVC |
-| `hayate-cli-{target}-update` | Self-updater binary |
-| `hayate-cli-installer.sh` | Shell installer (macOS/Linux) |
-| `hayate-cli-installer.ps1` | PowerShell installer (Windows) |
-| `source.tar.gz` | Source tarball |
-| `sha256.sum` | All checksums |
+| `hayate-cli-{target}.zip`    | Same, for Windows MSVC               |
+| `hayate-cli-{target}-update` | Self-updater binary                  |
+| `hayate-cli-installer.sh`    | Shell installer (macOS/Linux)        |
+| `hayate-cli-installer.ps1`   | PowerShell installer (Windows)       |
+| `source.tar.gz`              | Source tarball                       |
+| `sha256.sum`                 | All checksums                        |

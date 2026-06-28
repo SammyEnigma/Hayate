@@ -11,10 +11,10 @@ The `hayate` crate is a modular Rust library. Embed it directly into your applic
 
 ## Workspace Architecture
 
-| Crate | Purpose |
-|-------|---------|
-| [`hayate`](https://github.com/ShiinaSaku/Hayate/tree/master/hayate) | Core engine: QUIC transport, crypto, streaming, discovery |
-| [`hayate-cli`](https://github.com/ShiinaSaku/Hayate/tree/master/hayate-cli) | CLI binary wrapping the engine |
+| Crate                                                                       | Purpose                                                   |
+| --------------------------------------------------------------------------- | --------------------------------------------------------- |
+| [`hayate`](https://github.com/ShiinaSaku/Hayate/tree/master/hayate)         | Core engine: QUIC transport, crypto, streaming, discovery |
+| [`hayate-cli`](https://github.com/ShiinaSaku/Hayate/tree/master/hayate-cli) | CLI binary wrapping the engine                            |
 
 ---
 
@@ -110,12 +110,12 @@ Buffers are zeroed on release to prevent cryptographic plaintext leaks.
 
 ## Concurrency Model
 
-| Layer | Strategy |
-|-------|----------|
-| I/O | Single-thread compio event loop (io_uring / IOCP / kqueue) |
-| CPU-bound work | Dedicated OS thread pool (`std::thread::spawn`) per worker |
-| Transfer ordering | `BTreeMap`-based out-of-order frame reassembly |
-| Discovery | mDNS daemon thread + UDP broadcast task, background |
+| Layer             | Strategy                                                   |
+| ----------------- | ---------------------------------------------------------- |
+| I/O               | Single-thread compio event loop (io_uring / IOCP / kqueue) |
+| CPU-bound work    | Dedicated OS thread pool (`std::thread::spawn`) per worker |
+| Transfer ordering | `BTreeMap`-based out-of-order frame reassembly             |
+| Discovery         | mDNS daemon thread + UDP broadcast task, background        |
 
 ---
 
@@ -123,12 +123,12 @@ Buffers are zeroed on release to prevent cryptographic plaintext leaks.
 
 For protocol-level control, use these modules directly:
 
-| Module | Purpose |
-|--------|---------|
-| `hayate::transfer` | Handshake, consent, send/receive payload pipelines |
-| `hayate::protocol` | Wire constants, `Metadata` encode/decode, frame flags |
-| `hayate::crypto` | X25519, HKDF, AEAD sealing/opening |
-| `hayate::network` | QUIC endpoint binding, TLS config, transport params |
-| `hayate::discovery` | mDNS registration/browsing, UDP broadcast |
-| `hayate::tar` | Streaming tar pack/extract with path-traversal protection |
-| `hayate::error` | `EngineError` enum — all error variants |
+| Module              | Purpose                                                   |
+| ------------------- | --------------------------------------------------------- |
+| `hayate::transfer`  | Handshake, consent, send/receive payload pipelines        |
+| `hayate::protocol`  | Wire constants, `Metadata` encode/decode, frame flags     |
+| `hayate::crypto`    | X25519, HKDF, AEAD sealing/opening                        |
+| `hayate::network`   | QUIC endpoint binding, TLS config, transport params       |
+| `hayate::discovery` | mDNS registration/browsing, UDP broadcast                 |
+| `hayate::tar`       | Streaming tar pack/extract with path-traversal protection |
+| `hayate::error`     | `EngineError` enum — all error variants                   |
