@@ -58,6 +58,7 @@ rapidhash = { workspace = true }
 
 [target.'cfg(all(target_os = "windows", target_arch = "aarch64"))'.dependencies]
 blake3 = { workspace = true, features = ["no_neon"] }
+zstd = { workspace = true, features = ["no_asm"] }
 
 [dev-dependencies]
 compio = { workspace = true }
