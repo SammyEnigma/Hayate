@@ -1,8 +1,8 @@
 //! Cryptographic primitives: X25519 ECDH key exchange, HKDF-SHA256 key
 //! derivation, and AES-GCM / ChaCha20-Poly1305 AEAD.
 
-use chacha20poly1305::aead::OsRng;
-use chacha20poly1305::aead::rand_core::RngCore;
+use rand_core::OsRng;
+use rand_core::RngCore;
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey};
 use ring::hkdf;
 use x25519_dalek::{EphemeralSecret, PublicKey};

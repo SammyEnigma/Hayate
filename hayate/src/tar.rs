@@ -72,6 +72,7 @@ fn append_dir_dedup<W: io::Write>(
             // (e.g. TOCTOU race), treat the file as a first occurrence
             // and let append_path_with_name surface any real IO error.
             let mut is_dup = false;
+            #[cfg_attr(not(unix), allow(unused_variables))]
             if let Ok(meta) = entry.metadata() {
                 #[cfg(unix)]
                 let nlink = {
@@ -262,6 +263,7 @@ fn normalize_path(path: &Path) -> PathBuf {
 pub fn estimate_dir_size(root_dir: &Path) -> u64 {
     // On Unix, deduplicate hard-linked files by (device, inode).
     // On other platforms the set stays empty because nlink is always 1.
+    #[cfg_attr(not(unix), allow(unused_mut, unused_variables))]
     let mut seen: std::collections::HashSet<(u64, u64)> = std::collections::HashSet::new();
 
     walkdir::WalkDir::new(root_dir)
@@ -432,8 +434,13 @@ mod tests {
         fs::hard_link(dir.join("a.txt"), dir.join("c.txt")).unwrap();
 
         let total = estimate_dir_size(&dir);
-        // Should count 11 bytes once, not 33.
+        // On Unix, inode dedup counts 11 bytes once. On other platforms
+        // inode detection is unavailable, so each hard link is counted
+        // independently.
+        #[cfg(unix)]
         assert_eq!(total, 11);
+        #[cfg(not(unix))]
+        assert_eq!(total, 33);
 
         fs::remove_dir_all(dir).unwrap();
     }
