@@ -415,10 +415,13 @@ pub fn transfer_progress_bar(label: &str, total_bytes: u64) -> ProgressBar {
     pb.set_prefix(format!("{label:>8}"));
     if is_tty() {
         pb.set_draw_target(ProgressDrawTarget::stdout_with_hz(15));
-        pb.enable_steady_tick(std::time::Duration::from_millis(100));
     } else {
         pb.set_draw_target(ProgressDrawTarget::hidden());
     }
+    // Seed the initial draw so the bar is visible before the first chunk
+    // lands, and speed/ETA are calculated from actual progress deltas rather
+    // than being polluted by zero-progress steady-tick samples.
+    pb.set_position(0);
     pb
 }
 
