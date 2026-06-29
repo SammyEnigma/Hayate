@@ -32,9 +32,6 @@ futures-util = { workspace = true }
 quinn-proto = { workspace = true }
 rcgen = { workspace = true }
 rustls = { workspace = true }
-
-# Cryptography.
-chacha20poly1305 = { workspace = true }
 hkdf = { workspace = true }
 rand_core = { workspace = true }
 ring = { workspace = true }
