@@ -141,76 +141,6 @@ async fn write_u32<S: AsyncWriteExt + Unpin>(stream: &mut S, v: u32) -> Result<(
         .map(|_| ())
 }
 
-// ---------------------------------------------------------------------------
-// Handshake — sender side
-// ---------------------------------------------------------------------------
-
-/// Performs the cryptographic version check, key exchange, cipher negotiation,
-/// and metadata handshake on the sender side.
-///
-/// This function works with a single combined stream implementing both `AsyncRead`
-/// and `AsyncWrite`.
-///
-/// # Errors
-///
-/// Returns [`EngineError`] if version mismatch, key exchange derivation, cipher negotiation,
-/// or encryption/decryption fails, or if the receiver rejects the transfer.
-pub async fn handshake_sender<S>(
-    stream: &mut S,
-    meta: &Metadata,
-    passphrase: Option<&str>,
-) -> Result<([u8; 32], u8), EngineError>
-where
-    S: compio::io::AsyncRead + compio::io::AsyncWrite + Unpin,
-{
-    meta.validate()?;
-
-    // 1. Protocol version + Sender Capability
-    let mut ver_and_cap = Vec::with_capacity(3);
-    ver_and_cap.extend_from_slice(&PROTOCOL_VERSION.to_be_bytes());
-    let sender_cap = if crypto::features::is_aes_hw_accelerated() {
-        crypto::CIPHER_AES256_GCM
-    } else {
-        crypto::CIPHER_CHACHA20
-    };
-    ver_and_cap.push(sender_cap);
-    write_all_owned(stream, ver_and_cap).await?;
-
-    // 2. Key exchange
-    let (secret, our_pub) = crypto::generate_keypair();
-    write_all_owned(stream, our_pub.to_vec()).await?;
-
-    let peer_pub_bytes = read_exact_n(stream, 32).await?;
-    let mut peer_pub = [0u8; 32];
-    peer_pub.copy_from_slice(&peer_pub_bytes);
-
-    let key = crypto::derive_key(secret, &peer_pub, passphrase)?;
-
-    // 3. Receive the selected cipher from receiver
-    let cipher_bytes = read_exact_n(stream, 1).await?;
-    let selected_cipher = cipher_bytes[0];
-    if selected_cipher != crypto::CIPHER_CHACHA20 && selected_cipher != crypto::CIPHER_AES256_GCM {
-        return Err(EngineError::Handshake(
-            "Unknown cipher suite selected by receiver".into(),
-        ));
-    }
-
-    // 4. Encrypted metadata
-    let encrypted = crypto::encrypt_metadata(&key, selected_cipher, &meta.encode())?;
-    write_u32(stream, encrypted.len() as u32).await?;
-    write_all_owned(stream, encrypted).await?;
-
-    // 5. Consent
-    let consent = read_exact_n(stream, 1).await?;
-    match consent[0] {
-        0x01 => Ok((key, selected_cipher)),
-        0x00 => Err(EngineError::TransferRejected),
-        other => Err(EngineError::InvalidFrame(format!(
-            "unexpected consent byte 0x{other:02x}"
-        ))),
-    }
-}
-
 /// Performs the cryptographic version check, key exchange, cipher negotiation,
 /// and metadata handshake on the sender side using separate write and read streams.
 ///
@@ -236,7 +166,7 @@ where
     // 1. Protocol version + Sender Capability
     let mut ver_and_cap = Vec::with_capacity(3);
     ver_and_cap.extend_from_slice(&PROTOCOL_VERSION.to_be_bytes());
-    let sender_cap = if crypto::features::is_aes_hw_accelerated() {
+    let sender_cap = if crypto::is_aes_hw_accelerated() {
         crypto::CIPHER_AES256_GCM
     } else {
         crypto::CIPHER_CHACHA20
@@ -279,84 +209,6 @@ where
     }
 }
 
-// ---------------------------------------------------------------------------
-// Handshake — receiver side
-// ---------------------------------------------------------------------------
-
-/// Performs the cryptographic version check, key exchange, cipher negotiation,
-/// and metadata handshake on the receiver side.
-///
-/// This function works with a single combined stream implementing both `AsyncRead`
-/// and `AsyncWrite`.
-///
-/// # Errors
-///
-/// Returns [`EngineError`] if version mismatch, key exchange derivation, cipher negotiation,
-/// or encryption/decryption fails.
-pub async fn handshake_receiver<S>(
-    stream: &mut S,
-    passphrase: Option<&str>,
-) -> Result<(([u8; 32], u8), Metadata), EngineError>
-where
-    S: compio::io::AsyncRead + compio::io::AsyncWrite + Unpin,
-{
-    // 1. Version check + Sender Capability
-    let ver_cap = read_exact_n(stream, 3).await?;
-    let remote_ver = u16::from_be_bytes([ver_cap[0], ver_cap[1]]);
-    if remote_ver != PROTOCOL_VERSION {
-        return Err(EngineError::ProtocolMismatch {
-            local: PROTOCOL_VERSION,
-            remote: remote_ver,
-        });
-    }
-    let sender_cap = ver_cap[2];
-    if sender_cap != crypto::CIPHER_CHACHA20 && sender_cap != crypto::CIPHER_AES256_GCM {
-        return Err(EngineError::Handshake(
-            "Unknown cipher capability sent by sender".into(),
-        ));
-    }
-
-    let selected_cipher =
-        if sender_cap == crypto::CIPHER_AES256_GCM && crypto::features::is_aes_hw_accelerated() {
-            crypto::CIPHER_AES256_GCM
-        } else {
-            crypto::CIPHER_CHACHA20
-        };
-
-    // 2. Key exchange
-    let peer_pub_bytes = read_exact_n(stream, 32).await?;
-    let mut peer_pub = [0u8; 32];
-    peer_pub.copy_from_slice(&peer_pub_bytes);
-
-    let (secret, our_pub) = crypto::generate_keypair();
-    write_all_owned(stream, our_pub.to_vec()).await?;
-
-    let key = crypto::derive_key(secret, &peer_pub, passphrase)?;
-
-    // 3. Write selected cipher back to sender
-    write_all_owned(stream, vec![selected_cipher]).await?;
-
-    // 4. Metadata
-    let enc_len = read_u32(stream).await? as usize;
-    if enc_len == 0 || enc_len > MAX_METADATA_ENCRYPTED {
-        return Err(EngineError::InvalidFrame(format!(
-            "invalid metadata length: {enc_len}"
-        )));
-    }
-    let enc = read_exact_n(stream, enc_len).await?;
-    let plain = match crypto::decrypt_metadata(&key, selected_cipher, &enc) {
-        Ok(p) => p,
-        Err(e) => {
-            if passphrase.is_some() {
-                return Err(EngineError::InvalidPassphrase);
-            }
-            return Err(e);
-        }
-    };
-    let meta = Metadata::decode(&plain)?;
-    Ok(((key, selected_cipher), meta))
-}
-
 /// Performs the cryptographic version check, key exchange, cipher negotiation,
 /// and metadata handshake on the receiver side using separate write and read streams.
 ///
@@ -393,7 +245,7 @@ where
     }
 
     let selected_cipher =
-        if sender_cap == crypto::CIPHER_AES256_GCM && crypto::features::is_aes_hw_accelerated() {
+        if sender_cap == crypto::CIPHER_AES256_GCM && crypto::is_aes_hw_accelerated() {
             crypto::CIPHER_AES256_GCM
         } else {
             crypto::CIPHER_CHACHA20

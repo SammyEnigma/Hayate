@@ -72,31 +72,6 @@ pub struct Metadata {
     pub hash_algo: String,
 }
 
-// ── Cold error constructors ────────────────────────────────────────────
-// Keeping `format!`-based error construction in `#[cold] #[inline(never)]`
-// functions ensures the compiler emits a tight, branch-free hot path for
-// `validate`. Under CodSpeed's Valgrind-based CPU simulation the instruction
-// count of `format!` argument setup is otherwise attributed to the caller
-// even when the branch is never taken.
-
-#[cold]
-#[inline(never)]
-fn invalid_filename_len(len: usize) -> crate::EngineError {
-    crate::EngineError::InvalidFrame(format!("invalid filename length: {len}"))
-}
-
-#[cold]
-#[inline(never)]
-fn invalid_transfer_type(ty: u8) -> crate::EngineError {
-    crate::EngineError::InvalidFrame(format!("invalid transfer type: 0x{ty:02x}"))
-}
-
-#[cold]
-#[inline(never)]
-fn invalid_hash_algo_len(len: usize) -> crate::EngineError {
-    crate::EngineError::InvalidFrame(format!("invalid hash algorithm length: {len}"))
-}
-
 impl Metadata {
     /// Creates a new validated [`Metadata`] instance.
     #[must_use]
@@ -117,14 +92,21 @@ impl Metadata {
     pub fn validate(&self) -> Result<(), crate::EngineError> {
         let name_len = self.filename.len();
         if name_len.wrapping_sub(1) >= MAX_FILENAME_BYTES {
-            return Err(invalid_filename_len(name_len));
+            return Err(crate::EngineError::InvalidFrame(format!(
+                "invalid filename length: {name_len}"
+            )));
         }
         if self.transfer_type > TRANSFER_DIR {
-            return Err(invalid_transfer_type(self.transfer_type));
+            return Err(crate::EngineError::InvalidFrame(format!(
+                "invalid transfer type: 0x{transfer_type:02x}",
+                transfer_type = self.transfer_type,
+            )));
         }
         let algo_len = self.hash_algo.len();
         if algo_len.wrapping_sub(1) >= 255 {
-            return Err(invalid_hash_algo_len(algo_len));
+            return Err(crate::EngineError::InvalidFrame(format!(
+                "invalid hash algorithm length: {algo_len}"
+            )));
         }
         Ok(())
     }

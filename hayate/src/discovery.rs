@@ -145,15 +145,6 @@ pub fn start_broadcaster_hybrid(
     Ok(BroadcasterGuard::new(cancel_tx, mdns))
 }
 
-/// Legacy broadcaster — uses only UDP. Kept for backward compatibility.
-pub async fn start_broadcaster(
-    channel_id: &str,
-    port: u16,
-    cancel_rx: flume::Receiver<()>,
-) -> Result<(), io::Error> {
-    udp_broadcast_loop(channel_id, port, std::env::consts::OS, cancel_rx).await
-}
-
 /// Internal UDP broadcast loop.
 async fn udp_broadcast_loop(
     channel_id: &str,
@@ -311,8 +302,7 @@ pub fn listen_for_broadcast(
     }
 }
 
-/// Parses a UDP discovery packet in the format:
-/// `HAYATE_PEER:v2:<ChannelID>:<OS>:<Port>` (with optional version prefix)
+/// Parses a UDP discovery packet: `HAYATE_PEER:v2:<ChannelID>:<OS>:<Port>`.
 fn parse_udp_packet(
     text: &str,
     target_channel_id: Option<&str>,
@@ -322,18 +312,12 @@ fn parse_udp_packet(
     if parts.next()? != "HAYATE_PEER" {
         return None;
     }
-    let next = parts.next()?;
-    let (channel_id, os, port_str) = if next == "v2" {
-        (
-            parts.next()?.to_owned(),
-            parts.next()?.to_owned(),
-            parts.next()?.to_owned(),
-        )
-    } else {
-        let os = parts.next()?.to_owned();
-        let port_str = parts.next()?.to_owned();
-        (next.to_owned(), os, port_str)
-    };
+    if parts.next()? != "v2" {
+        return None;
+    }
+    let channel_id = parts.next()?.to_owned();
+    let os = parts.next()?.to_owned();
+    let port_str = parts.next()?.to_owned();
 
     let matches = match target_channel_id {
         Some(expected) => channel_id == *expected,
@@ -345,54 +329,5 @@ fn parse_udp_packet(
         Some((format!("UDP:{channel_id}"), peer_addr, os))
     } else {
         None
-    }
-}
-
-/// Listens for broadcasts on UDP only (legacy compatibility).
-pub async fn listen_for_broadcast_udp(
-    target_phrase: Option<&str>,
-    timeout: Duration,
-) -> Result<Option<(String, SocketAddr, String)>, io::Error> {
-    let target_channel_id = target_phrase.map(derive_channel_id);
-
-    let std_socket = socket2::Socket::new(
-        socket2::Domain::IPV4,
-        socket2::Type::DGRAM,
-        Some(socket2::Protocol::UDP),
-    )?;
-    std_socket.set_reuse_address(true)?;
-    #[cfg(not(windows))]
-    std_socket.set_reuse_port(true)?;
-
-    let listen_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), UDP_DISCOVERY_PORT);
-    std_socket.bind(&socket2::SockAddr::from(listen_addr))?;
-
-    let socket = compio::net::UdpSocket::from_std(std_socket.into())?;
-    let buf = vec![0u8; 1024];
-
-    let res = compio::time::timeout(timeout, async move {
-        let mut temp_buf = buf;
-        loop {
-            let compio::BufResult(recv_res, b) = socket.recv_from(temp_buf).await;
-            temp_buf = b;
-            match recv_res {
-                Ok((n, src_addr)) => {
-                    let data = &temp_buf[..n];
-                    if let Ok(text) = std::str::from_utf8(data)
-                        && let Some(result) =
-                            parse_udp_packet(text, target_channel_id.as_deref(), src_addr)
-                    {
-                        return Ok(Some(result));
-                    }
-                }
-                Err(e) => return Err(e),
-            }
-        }
-    })
-    .await;
-
-    match res {
-        Ok(inner_res) => inner_res,
-        Err(_) => Ok(None),
     }
 }

@@ -28,14 +28,12 @@ use crate::EngineError;
 ///
 /// This function is entirely synchronous and must be called on a dedicated
 /// thread when used from async code.
-pub fn write_tar_sync(root_dir: &Path, out: &mut impl io::Write) -> Result<u64, io::Error> {
+pub fn write_tar_sync(root_dir: &Path, out: &mut impl io::Write) -> Result<(), io::Error> {
     let mut builder = tar::Builder::new(out);
     builder.follow_symlinks(false);
     append_dir_dedup(&mut builder, root_dir)?;
     builder.finish()?;
-    // Return 0 — actual byte count not tracked here; caller tracks progress
-    // via the write callbacks.
-    Ok(0)
+    Ok(())
 }
 
 /// Walks `root_dir` top-down and appends entries to the tar builder, detecting

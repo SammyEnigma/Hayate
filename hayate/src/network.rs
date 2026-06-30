@@ -265,8 +265,9 @@ impl ServerCertVerifier for SkipCertVerification {
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        // ponytail: these are advertised to the peer during TLS negotiation,
+        // not verified. Empty list causes handshake failure.
         vec![
-            SignatureScheme::RSA_PKCS1_SHA256,
             SignatureScheme::ECDSA_NISTP256_SHA256,
             SignatureScheme::ED25519,
         ]

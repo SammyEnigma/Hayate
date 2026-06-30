@@ -230,7 +230,7 @@ pub fn pairing_code(code: &str, command: &str) {
         style(v).dim(),
         style(icon_lock()).bold(),
         style(" Pairing Code").bold().cyan(),
-        pad_right("", inner_width - 18, v),
+        pad_right("", inner_width - 18, style(v).dim()),
     );
     println!(
         "   {}{}{}",
@@ -242,7 +242,7 @@ pub fn pairing_code(code: &str, command: &str) {
         "   {}  {}{}",
         style(v).dim(),
         style(code).bold().yellow(),
-        pad_right(code, inner_width - 2, v),
+        pad_right(code, inner_width - 2, style(v).dim()),
     );
     println!(
         "   {}{}{}",
@@ -255,13 +255,13 @@ pub fn pairing_code(code: &str, command: &str) {
         style(v).dim(),
         style(icon_dot()).dim(),
         style("Run on receiver:").dim(),
-        pad_right("● Run on receiver:", inner_width - 2, v),
+        pad_right("● Run on receiver:", inner_width - 2, style(v).dim()),
     );
     println!(
         "   {}  {}{}",
         style(v).dim(),
         style(command).green().bold(),
-        pad_right(command, inner_width - 2, v),
+        pad_right(command, inner_width - 2, style(v).dim()),
     );
     println!(
         "   {}{}{}",
@@ -272,15 +272,15 @@ pub fn pairing_code(code: &str, command: &str) {
     println!();
 }
 
-/// Returns padding + closing border character.
-fn pad_right(content: &str, total_width: usize, border: &str) -> String {
+/// Returns padding + border. Caller applies the style to `border`.
+fn pad_right(content: &str, total_width: usize, border: impl std::fmt::Display) -> String {
     let content_len = console::measure_text_width(content);
     let pad = if total_width > content_len {
         total_width - content_len
     } else {
         1
     };
-    format!("{}{}", " ".repeat(pad), style(border).dim())
+    format!("{}{}", " ".repeat(pad), border)
 }
 
 #[must_use]
@@ -314,7 +314,7 @@ pub fn print_info_card(title: &str, rows: &[(&str, String)]) {
         "   {} {}{}",
         style(v).cyan(),
         style(&title_display).bold().cyan(),
-        pad_right_colored(&title_display, inner_width - 1, v),
+        pad_right(&title_display, inner_width - 1, style(v).cyan()),
     );
     // Separator
     println!(
@@ -331,7 +331,7 @@ pub fn print_info_card(title: &str, rows: &[(&str, String)]) {
             style(v).cyan(),
             style(format!("{key:<12}")).dim(),
             style(value).white().bold(),
-            pad_right_colored(&row_text, inner_width - 1, v),
+            pad_right(&row_text, inner_width - 1, style(v).cyan()),
         );
     }
     // Bottom border
@@ -342,17 +342,6 @@ pub fn print_info_card(title: &str, rows: &[(&str, String)]) {
         style(box_br()).cyan()
     );
     println!();
-}
-
-/// Returns padding + closing border (for colored content where we measure the raw text).
-fn pad_right_colored(raw_text: &str, total_width: usize, border: &str) -> String {
-    let content_len = console::measure_text_width(raw_text);
-    let pad = if total_width > content_len {
-        total_width - content_len
-    } else {
-        1
-    };
-    format!("{}{}", " ".repeat(pad), style(border).cyan())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -567,7 +556,7 @@ pub fn print_peer_table(peers: &[(String, std::net::SocketAddr, String)]) {
             pad_right(
                 &format!("  {num:<4} {name_display:<22} {addr_str:<24} {os}"),
                 inner_width,
-                v,
+                style(v).dim(),
             )
         );
     }
@@ -631,7 +620,7 @@ pub fn print_transfer_summary(
         "   {} {}{}",
         style(v).green(),
         style(&title_text).bold().green(),
-        pad_right_green(&title_text, inner_width - 1, v),
+        pad_right(&title_text, inner_width - 1, style(v).green()),
     );
     // Separator
     println!(
@@ -649,7 +638,7 @@ pub fn print_transfer_summary(
                 style(v).green(),
                 style(format!("{key:<12}")).dim(),
                 speed_styled,
-                pad_right_green(&row_text, inner_width - 1, v),
+                pad_right(&row_text, inner_width - 1, style(v).green()),
             );
         } else {
             println!(
@@ -657,7 +646,7 @@ pub fn print_transfer_summary(
                 style(v).green(),
                 style(format!("{key:<12}")).dim(),
                 style(value).white().bold(),
-                pad_right_green(&row_text, inner_width - 1, v),
+                pad_right(&row_text, inner_width - 1, style(v).green()),
             );
         }
     }
@@ -669,16 +658,6 @@ pub fn print_transfer_summary(
         style(box_br()).green()
     );
     println!();
-}
-
-fn pad_right_green(raw_text: &str, total_width: usize, v: &str) -> String {
-    let content_len = console::measure_text_width(raw_text);
-    let pad = if total_width > content_len {
-        total_width - content_len
-    } else {
-        1
-    };
-    format!("{}{}", " ".repeat(pad), style(v).green())
 }
 
 /// Color-code speed based on performance tiers.

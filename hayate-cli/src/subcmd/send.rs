@@ -1,9 +1,7 @@
 //! `hayate send` subcommand.
 
 use std::{
-    io,
     net::ToSocketAddrs,
-    path::Path,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -13,11 +11,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use compio::io::AsyncRead;
-use hayate::{
-    network,
-    protocol::{Metadata, TRANSFER_DIR, TRANSFER_FILE},
-    transfer,
-};
+use hayate::{HayateSender, network, protocol::TRANSFER_DIR, transfer};
 
 use crate::{cli::SendArgs, output};
 
@@ -135,7 +129,10 @@ pub async fn run(args: SendArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
         .context("Failed to open streams for handshake")?;
 
     // ── Stage 2: Prepare ─────────────────────────────────────────────
-    let (meta, total_size) = build_metadata(path, args.hash.clone())?;
+    let sender = HayateSender::new()
+        .compress(args.compress)
+        .hash_algo(args.hash.clone());
+    let (meta, total_size) = sender.build_metadata(path)?;
 
     // ── Stage 3: Handshake ───────────────────────────────────────────
     output::stage("handshake", "negotiating cipher…");
@@ -184,39 +181,32 @@ pub async fn run(args: SendArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
 
     let start = Instant::now();
     let cancelled_transfer = Arc::clone(&cancelled);
+    let pb_clone = pb.clone();
 
     let checksum = if path.is_dir() {
-        send_directory(
-            path,
-            &key,
-            cipher_id,
-            &args.hash,
-            &mut send_stream,
-            args.compress,
-            |b| {
-                if let Some(pb) = &pb {
-                    output::set_transfer_position(pb, b);
+        sender
+            .send_directory(path, &key, cipher_id, &args.hash, &mut send_stream, {
+                let pb = pb_clone.clone();
+                move |b| {
+                    if let Some(pb) = &pb {
+                        output::set_transfer_position(pb, b);
+                    }
                 }
-            },
-        )
-        .await
-        .context("Failed to send directory contents")?
+            })
+            .await
+            .context("Failed to send directory contents")?
     } else {
-        send_file(
-            path,
-            &key,
-            cipher_id,
-            &args.hash,
-            &mut send_stream,
-            args.compress,
-            |b| {
-                if let Some(pb) = &pb {
-                    output::set_transfer_position(pb, b);
+        sender
+            .send_file(path, &key, cipher_id, &args.hash, &mut send_stream, {
+                let pb = pb_clone;
+                move |b| {
+                    if let Some(pb) = &pb {
+                        output::set_transfer_position(pb, b);
+                    }
                 }
-            },
-        )
-        .await
-        .context("Failed to send file contents")?
+            })
+            .await
+            .context("Failed to send file contents")?
     };
 
     if cancelled_transfer.load(Ordering::SeqCst) {
@@ -257,103 +247,4 @@ pub async fn run(args: SendArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
 
     conn.close(0u32.into(), b"complete");
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn build_metadata(path: &Path, hash: String) -> Result<(Metadata, u64)> {
-    let filename = path
-        .file_name()
-        .context("path has no filename")?
-        .to_string_lossy()
-        .into_owned();
-
-    if path.is_dir() {
-        let total = hayate::tar::estimate_dir_size(path);
-        Ok((Metadata::new(filename, total, TRANSFER_DIR, hash), total))
-    } else {
-        let total = std::fs::metadata(path)?.len();
-        Ok((Metadata::new(filename, total, TRANSFER_FILE, hash), total))
-    }
-}
-
-async fn send_file(
-    path: &Path,
-    key: &[u8; 32],
-    cipher_id: u8,
-    hash_algo: &str,
-    stream: &mut compio_quic::SendStream,
-    compress: bool,
-    progress_cb: impl FnMut(u64),
-) -> Result<String> {
-    let file = compio::fs::File::open(path).await?;
-    let source = hayate::transfer::PayloadSource::File { file, pos: 0 };
-    let filename = path.file_name().and_then(|s| s.to_str());
-    Ok(transfer::send_payload_write(
-        key,
-        cipher_id,
-        source,
-        stream,
-        compress,
-        filename,
-        hash_algo,
-        progress_cb,
-    )
-    .await?)
-}
-
-async fn send_directory(
-    dir: &Path,
-    key: &[u8; 32],
-    cipher_id: u8,
-    hash_algo: &str,
-    stream: &mut compio_quic::SendStream,
-    compress: bool,
-    progress_cb: impl FnMut(u64),
-) -> Result<String> {
-    let (tx, rx) = flume::bounded::<Result<Vec<u8>, io::Error>>(8);
-    let dir_clone = dir.to_path_buf();
-
-    std::thread::spawn(move || {
-        struct ChanWriter {
-            tx: flume::Sender<Result<Vec<u8>, io::Error>>,
-        }
-        impl io::Write for ChanWriter {
-            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-                self.tx
-                    .send(Ok(buf.to_vec()))
-                    .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "receiver gone"))?;
-                Ok(buf.len())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-        let writer = ChanWriter { tx: tx.clone() };
-        let mut buffered_writer = std::io::BufWriter::with_capacity(128 * 1024, writer);
-        let mut run = move || -> Result<(), std::io::Error> {
-            hayate::tar::write_tar_sync(&dir_clone, &mut buffered_writer)?;
-            use std::io::Write;
-            buffered_writer.flush()?;
-            Ok(())
-        };
-        if let Err(e) = run() {
-            let _ = tx.send(Err(e));
-        }
-    });
-
-    let source = hayate::transfer::PayloadSource::Channel(rx);
-    Ok(transfer::send_payload_write(
-        key,
-        cipher_id,
-        source,
-        stream,
-        compress,
-        None,
-        hash_algo,
-        progress_cb,
-    )
-    .await?)
 }

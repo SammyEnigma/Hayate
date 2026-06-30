@@ -4,6 +4,46 @@ All notable changes to Hayate are documented in this file.
 
 ---
 
+## [6.0.0] - 2026-06-30
+
+### Removed
+
+- `handshake_sender` and `handshake_receiver` (combined read+write stream handshake).
+  Use `handshake_sender_split` / `handshake_receiver_split` instead. The split-stream
+  variants match QUIC's unidirectional stream model and were already the only path
+  used by the library and CLI internally. Combined-stream functions were thin
+  duplicates and have been removed.
+- `start_broadcaster` (UDP-only legacy broadcaster). Use `start_broadcaster_hybrid`
+  which runs mDNS + UDP simultaneously. The UDP-only variant was marked legacy and
+  never called internally.
+- `listen_for_broadcast_udp` (legacy UDP-only listener). Use `listen_for_broadcast`
+  which browses mDNS and listens on UDP concurrently.
+- v1 UDP discovery packet format backward compatibility. All broadcasters have used
+  the `HAYATE_PEER:v2:...` format since 5.0.0. The version-less parse path is removed.
+- `crypto::features` submodule. The single function `is_aes_hw_accelerated()` now
+  lives directly in `crypto`. Replace `crypto::features::is_aes_hw_accelerated()`
+  with `crypto::is_aes_hw_accelerated()`.
+
+### Changed
+
+- `write_tar_sync` return type changed from `Result<u64, io::Error>` to
+  `Result<(), io::Error>`. The `u64` was always `0` and never used by callers.
+- Protocol validation error constructors inlined — the separate `#[cold]` functions
+  that existed solely for benchmark attribution have been removed. Error construction
+  is identical; stack traces and messages are unchanged.
+- `SkipCertVerification::supported_verify_schemes()` advertises only ECDSA + Ed25519
+  (dropped RSA-PKCS1-SHA256). All signatures are still accepted by the verifier;
+  this only narrows the schemes the peer is offered during TLS negotiation.
+
+### Added
+
+- `HayateSender::build_metadata()`, `send_file()`, and `send_directory()` are now
+  public. Callers who manage their own QUIC connection and handshake can use these
+  to get metadata and stream payloads without duplicating the library's internal
+  logic.
+
+---
+
 ## [5.1.1](https://github.com/ShiinaSaku/Hayate/compare/v5.1.0...v5.1.1) - 2026-06-28
 
 ### Other

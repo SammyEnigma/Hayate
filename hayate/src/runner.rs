@@ -210,7 +210,16 @@ impl HayateSender {
         Ok(checksum)
     }
 
-    fn build_metadata(&self, path: &Path) -> Result<(Metadata, u64), EngineError> {
+    /// Builds [`Metadata`] and estimates total byte size for `path`.
+    ///
+    /// Callers who perform their own QUIC connection and handshake can use this
+    /// instead of [`Self::send`] to interleave terminal UI between stages.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] if the path has no filename or metadata cannot
+    /// be read.
+    pub fn build_metadata(&self, path: &Path) -> Result<(Metadata, u64), EngineError> {
         let filename = path
             .file_name()
             .ok_or_else(|| {
@@ -237,7 +246,16 @@ impl HayateSender {
         }
     }
 
-    async fn send_file(
+    /// Sends a single file over an already-established QUIC send stream.
+    ///
+    /// Callers who perform their own QUIC connection and handshake can use this
+    /// instead of [`Self::send`] to interleave terminal UI between stages.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] if file I/O, compression, encryption, or network
+    /// write fails.
+    pub async fn send_file(
         &self,
         path: &Path,
         key: &[u8; 32],
@@ -264,7 +282,16 @@ impl HayateSender {
         .await
     }
 
-    async fn send_directory(
+    /// Sends a directory as a tar stream over an already-established QUIC send stream.
+    ///
+    /// Callers who perform their own QUIC connection and handshake can use this
+    /// instead of [`Self::send`] to interleave terminal UI between stages.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] if tar packaging, compression, encryption, or
+    /// network write fails.
+    pub async fn send_directory(
         &self,
         dir: &Path,
         key: &[u8; 32],

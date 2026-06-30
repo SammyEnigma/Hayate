@@ -9,8 +9,26 @@ use x25519_dalek::{EphemeralSecret, PublicKey};
 
 use crate::EngineError;
 
-/// CPU feature detection for optimized cryptographic operations.
-pub mod features;
+/// Dynamically detects if the host CPU possesses hardware AES acceleration.
+#[inline]
+#[must_use]
+pub fn is_aes_hw_accelerated() -> bool {
+    if std::env::var_os("HAYATE_FORCE_CHACHA20").is_some() {
+        return false;
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        std::is_x86_feature_detected!("aes")
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        std::arch::is_aarch64_feature_detected!("aes")
+    }
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        false
+    }
+}
 
 /// Cipher suite identifier for ChaCha20-Poly1305.
 pub const CIPHER_CHACHA20: u8 = 0x00;
