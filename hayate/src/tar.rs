@@ -157,6 +157,7 @@ pub fn extract_tar_sync(input: impl io::Read, output_dir: &Path) -> Result<(), E
     let output_dir = std::fs::canonicalize(output_dir).map_err(EngineError::Io)?;
 
     let mut archive = tar::Archive::new(input);
+    let mut pending_hard_links = Vec::new();
     for entry in archive.entries().map_err(EngineError::Io)? {
         let mut entry = entry.map_err(EngineError::Io)?;
         let entry_path = entry.path().map_err(EngineError::Io)?;
@@ -204,16 +205,8 @@ pub fn extract_tar_sync(input: impl io::Read, output_dir: &Path) -> Result<(), E
             if !normalized.starts_with(&output_dir) {
                 return Err(EngineError::PathTraversal);
             }
-            // The target file must already have been extracted (hard links
-            // can only refer to files that exist within the archive).
-            if !normalized.is_file() {
-                return Err(EngineError::PathTraversal);
-            }
 
-            if let Some(parent) = dest.parent() {
-                std::fs::create_dir_all(parent).map_err(EngineError::Io)?;
-            }
-            std::fs::hard_link(&normalized, &dest).map_err(EngineError::Io)?;
+            pending_hard_links.push((dest, normalized));
             continue;
         }
 
@@ -222,6 +215,20 @@ pub fn extract_tar_sync(input: impl io::Read, output_dir: &Path) -> Result<(), E
         }
         entry.unpack(&dest).map_err(EngineError::Io)?;
     }
+
+    // Replay collected hard links after all regular entries have been
+    // extracted, so an archive may safely reference a target that appears
+    // later in the stream.
+    for (dest, normalized) in pending_hard_links {
+        if !normalized.is_file() {
+            return Err(EngineError::PathTraversal);
+        }
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(EngineError::Io)?;
+        }
+        std::fs::hard_link(&normalized, &dest).map_err(EngineError::Io)?;
+    }
+
     Ok(())
 }
 
