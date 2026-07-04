@@ -154,6 +154,7 @@ fn relative_path_from_to(from_dir: &Path, to_path: &Path) -> PathBuf {
 /// Hard links are allowed with validated link targets; symlinks are rejected.
 pub fn extract_tar_sync(input: impl io::Read, output_dir: &Path) -> Result<(), EngineError> {
     std::fs::create_dir_all(output_dir).map_err(EngineError::Io)?;
+    let output_dir = std::fs::canonicalize(output_dir).map_err(EngineError::Io)?;
 
     let mut archive = tar::Archive::new(input);
     for entry in archive.entries().map_err(EngineError::Io)? {
@@ -177,7 +178,7 @@ pub fn extract_tar_sync(input: impl io::Read, output_dir: &Path) -> Result<(), E
 
         let dest = output_dir.join(&entry_path);
         // Final check: dest must be under output_dir.
-        if !dest.starts_with(output_dir) {
+        if !dest.starts_with(&output_dir) {
             return Err(EngineError::PathTraversal);
         }
 
@@ -200,7 +201,7 @@ pub fn extract_tar_sync(input: impl io::Read, output_dir: &Path) -> Result<(), E
             };
             // Lexically normalise and check containment.
             let normalized = normalize_path(&link_dest);
-            if !normalized.starts_with(output_dir) {
+            if !normalized.starts_with(&output_dir) {
                 return Err(EngineError::PathTraversal);
             }
             // The target file must already have been extracted (hard links
