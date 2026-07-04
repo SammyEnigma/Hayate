@@ -11,14 +11,20 @@
 //!
 //! The receiver **listens** on both channels and returns whichever peer
 //! announces first.
+//!
+//! ## Security note
+//!
+//! Discovery announcements are **unauthenticated**: any host on the local
+//! network can send a valid UDP broadcast or mDNS response. The pairing
+//! passphrase is what protects the actual transfer; discovery only tells the
+//! receiver where to initiate the QUIC connection. Treat discovered addresses
+//! as untrusted until the X25519 + passphrase handshake succeeds.
 
 use std::{
     io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     time::{Duration, Instant},
 };
-
-use sha2::{Digest, Sha256};
 
 /// mDNS service type for Hayate discovery.
 const MDNS_SERVICE_TYPE: &str = "_hayate._udp.local.";
@@ -40,12 +46,15 @@ pub struct DiscoveredPeer {
 }
 
 /// Computes SHA-256 of the phrase and returns the first 4 bytes as a hex string.
+///
+/// Used to derive a short, phrase-bound channel ID for mDNS TXT records and
+/// UDP broadcast packets. `ring` is already in the dep graph for AEAD, so no
+/// extra crate is needed.
 #[must_use]
 pub fn derive_channel_id(phrase: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(phrase.as_bytes());
-    let result = hasher.finalize();
-    crate::hex_encode(&result[..4])
+    // ponytail: ring::digest replaces the sha2 crate — same algorithm, zero extra dep.
+    let result = ring::digest::digest(&ring::digest::SHA256, phrase.as_bytes());
+    crate::hex_encode(&result.as_ref()[..4])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -98,6 +107,14 @@ impl Drop for BroadcasterGuard {
 /// Creates an mDNS daemon, registers a `_hayate._udp.local.` service with
 /// TXT records encoding the channel ID, OS, and QUIC port, then spawns the
 /// UDP broadcast loop in a detached compio task.
+///
+/// ## Security
+///
+/// UDP broadcast packets are sent in the clear and can be observed or spoofed
+/// by any host on the local network. They carry no secret material; the
+/// channel ID is public and the actual transfer is authenticated by the
+/// X25519 + passphrase handshake. Do not rely on discovery alone for peer
+/// identity.
 ///
 /// Returns a [`BroadcasterGuard`] that shuts down both when dropped.
 pub fn start_broadcaster_hybrid(
@@ -188,6 +205,13 @@ async fn udp_broadcast_loop(
 /// If `target_phrase` is `Some`, only peers whose channel ID matches the
 /// SHA-256 prefix of the phrase are accepted. If `None`, the first
 /// discovered peer is returned regardless.
+///
+/// ## Security
+///
+/// Discovery announcements are unauthenticated and can be spoofed on the
+/// local network. The returned address should be treated as a hint; the
+/// pairing handshake is what authenticates the peer and must reject any
+/// host that does not know the passphrase.
 pub fn listen_for_broadcast(
     target_phrase: Option<&str>,
     timeout: Duration,
@@ -329,5 +353,75 @@ fn parse_udp_packet(
         Some((format!("UDP:{channel_id}"), peer_addr, os))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::derive_channel_id;
+
+    // ── derive_channel_id ─────────────────────────────────────────────────────
+    //
+    // derive_channel_id is the public integration point for hex_encode (change 1):
+    // it takes the first 4 bytes of a SHA-256 digest and hex-encodes them.
+    //
+    // The 4-byte slice means we're encoding bytes in the range 0x00-0xff.
+    // A leading-zero regression (0x0a → "a") would shorten the output from
+    // 8 to 7 (or fewer) characters, breaking peer matching silently: both
+    // sender and receiver would independently compute the ID, but if one
+    // runs the old code and one the new, they would disagree on any phrase
+    // whose SHA-256 starts with a byte < 0x10.
+
+    /// Output must always be exactly 8 lowercase hex characters (4 bytes × 2).
+    /// A 7-character output would indicate a dropped leading zero.
+    #[test]
+    fn derive_channel_id_is_exactly_8_lowercase_hex_chars() {
+        // Use many phrases to maximise the chance of hitting a sub-0x10 first byte.
+        for phrase in [
+            "",
+            "a",
+            "abc",
+            "apple-bravo-charlie",
+            "x".repeat(200).as_str(),
+        ] {
+            let id = derive_channel_id(phrase);
+            assert_eq!(
+                id.len(),
+                8,
+                "derive_channel_id({phrase:?}) must be 8 chars, got {id:?}"
+            );
+            assert!(
+                id.chars().all(|c| c.is_ascii_hexdigit()),
+                "must be valid hex: {id}"
+            );
+            assert_eq!(id, id.to_lowercase(), "must be lowercase: {id}");
+        }
+    }
+
+    /// The function must be deterministic: same phrase → same ID, always.
+    /// Non-determinism would break pairing entirely.
+    #[test]
+    fn derive_channel_id_is_deterministic() {
+        let phrase = "test-phrase";
+        assert_eq!(derive_channel_id(phrase), derive_channel_id(phrase));
+    }
+
+    /// Different phrases must (with overwhelming probability) yield different IDs.
+    /// A collision here would allow impersonation attacks during pairing.
+    #[test]
+    fn derive_channel_id_different_phrases_produce_different_ids() {
+        assert_ne!(derive_channel_id("alpha"), derive_channel_id("beta"));
+        assert_ne!(derive_channel_id("foo"), derive_channel_id("bar"));
+    }
+
+    /// Known-vector test: SHA-256("") = e3b0c442…; first 4 bytes = [0xe3, 0xb0, 0xc4, 0x42].
+    /// The expected channel ID is "e3b0c442".
+    ///
+    /// If `hex_encode` drops leading zeros this specific vector would still
+    /// pass (all bytes ≥ 0x10), but it locks down the ring::digest integration
+    /// and confirms the `[..4]` slice boundary is correct.
+    #[test]
+    fn derive_channel_id_known_vector_empty_phrase() {
+        assert_eq!(derive_channel_id(""), "e3b0c442");
     }
 }
