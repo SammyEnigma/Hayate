@@ -72,7 +72,7 @@ pub struct Metadata {
     pub total_size: u64,
     /// Transfer kind, either [`TRANSFER_FILE`] or [`TRANSFER_DIR`].
     pub transfer_type: u8,
-    /// Hash algorithm used for payload integrity (e.g., "blake3", "rapidhash").
+    /// Hash algorithm used for payload integrity (e.g., "blake3", "sha256").
     pub hash_algo: String,
 }
 
