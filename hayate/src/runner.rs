@@ -544,7 +544,7 @@ mod tests {
         let mut state: u64 = 0x1234_5678_9abc_def0;
         let mut written = 0;
         while written < len {
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
             let chunk_len = std::cmp::min(1024, len - written);
             let bytes: Vec<u8> = (0..chunk_len)
                 .map(|i| ((state >> (8 * (i % 8))) as u8).wrapping_add(i as u8))
@@ -647,11 +647,11 @@ mod tests {
                 assert!(deep.exists());
 
                 assert_eq!(
-                    std::fs::read(&src_dir_for_sender.join("top.txt")).unwrap(),
+                    std::fs::read(src_dir_for_sender.join("top.txt")).unwrap(),
                     std::fs::read(&top).unwrap()
                 );
                 assert_eq!(
-                    std::fs::read(&src_dir_for_sender.join("nested").join("deep.bin")).unwrap(),
+                    std::fs::read(src_dir_for_sender.join("nested").join("deep.bin")).unwrap(),
                     std::fs::read(&deep).unwrap()
                 );
 
