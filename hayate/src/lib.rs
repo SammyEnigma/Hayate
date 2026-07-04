@@ -85,7 +85,7 @@
 //! let sender = HayateSender::new()
 //!     .code("apple-bravo-charlie".to_owned());
 //!
-//! sender.send("report.pdf", |_| {}).await?;
+//! sender.send("report.pdf", |_| Ok(())).await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -98,7 +98,7 @@
 //!     .code("apple-bravo-charlie".to_owned())
 //!     .auto_accept(true);
 //!
-//! let (_checksum, _path) = receiver.receive("./downloads", |_| true, |_| {}).await?;
+//! let (_checksum, _path) = receiver.receive("./downloads", |_| true, |_| Ok(())).await?;
 //! # Ok(())
 //! # }
 //! ```

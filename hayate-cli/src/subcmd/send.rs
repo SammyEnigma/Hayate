@@ -11,7 +11,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use compio::io::AsyncRead;
-use hayate::{HayateSender, network, protocol::TRANSFER_DIR, transfer};
+use hayate::{EngineError, HayateSender, network, protocol::TRANSFER_DIR, transfer};
 
 use crate::{cli::SendArgs, output};
 
@@ -24,11 +24,7 @@ pub async fn run(args: SendArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
         bail!("Path does not exist: {}", path.display());
     }
 
-    if args.peer.is_some() && args.target.is_some() {
-        bail!("pass either TARGET or --peer, not both");
-    }
-
-    let target = args.peer.as_ref().or(args.target.as_ref());
+    let target = args.target.as_ref();
 
     let (phrase, print_instruction) = if let Some(code) = &args.code {
         (code.clone(), false)
@@ -188,9 +184,13 @@ pub async fn run(args: SendArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
             .send_directory(path, &key, cipher_id, &args.hash, &mut send_stream, {
                 let pb = pb_clone.clone();
                 move |b| {
+                    if cancelled_transfer.load(Ordering::SeqCst) {
+                        return Err(EngineError::Cancelled("transfer cancelled by user".into()));
+                    }
                     if let Some(pb) = &pb {
                         output::set_transfer_position(pb, b);
                     }
+                    Ok(())
                 }
             })
             .await
@@ -200,19 +200,18 @@ pub async fn run(args: SendArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
             .send_file(path, &key, cipher_id, &args.hash, &mut send_stream, {
                 let pb = pb_clone;
                 move |b| {
+                    if cancelled_transfer.load(Ordering::SeqCst) {
+                        return Err(EngineError::Cancelled("transfer cancelled by user".into()));
+                    }
                     if let Some(pb) = &pb {
                         output::set_transfer_position(pb, b);
                     }
+                    Ok(())
                 }
             })
             .await
             .context("Failed to send file contents")?
     };
-
-    if cancelled_transfer.load(Ordering::SeqCst) {
-        conn.close(1u32.into(), b"cancelled");
-        bail!("transfer cancelled");
-    }
 
     // Finish the send stream and notify receiver we're done sending.
     send_stream

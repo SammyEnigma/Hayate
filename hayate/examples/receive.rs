@@ -34,6 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             |bytes| {
                 println!("Progress: {bytes} bytes received");
+                Ok(())
             },
         )
         .await?;

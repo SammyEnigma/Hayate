@@ -25,6 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let checksum = sender
         .send(path, |bytes| {
             println!("Progress: {bytes} bytes transferred");
+            Ok(())
         })
         .await?;
 

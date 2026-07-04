@@ -34,6 +34,7 @@ use crate::{
 ///
 /// let checksum = sender.send("path/to/file.txt", |progress| {
 ///     println!("Sent {progress} bytes");
+///     Ok(())
 /// }).await?;
 /// println!("Transfer complete. Checksum: {checksum}");
 /// # Ok(())
@@ -114,7 +115,7 @@ impl HayateSender {
     pub async fn send(
         self,
         path: impl AsRef<Path>,
-        progress_cb: impl FnMut(u64) + Send + 'static,
+        progress_cb: impl FnMut(u64) -> Result<(), EngineError> + Send + 'static,
     ) -> Result<String, EngineError> {
         let path = path.as_ref();
         if !path.exists() {
@@ -262,7 +263,7 @@ impl HayateSender {
         cipher_id: u8,
         hash_algo: &str,
         stream: &mut compio_quic::SendStream,
-        progress_cb: impl FnMut(u64) + Send + 'static,
+        progress_cb: impl FnMut(u64) -> Result<(), EngineError> + Send + 'static,
     ) -> Result<String, EngineError> {
         let file = compio::fs::File::open(path)
             .await
@@ -298,7 +299,7 @@ impl HayateSender {
         cipher_id: u8,
         hash_algo: &str,
         stream: &mut compio_quic::SendStream,
-        progress_cb: impl FnMut(u64) + Send + 'static,
+        progress_cb: impl FnMut(u64) -> Result<(), EngineError> + Send + 'static,
     ) -> Result<String, EngineError> {
         let (tx, rx) = flume::bounded::<Result<Vec<u8>, std::io::Error>>(8);
         let dir_clone = dir.to_path_buf();
@@ -366,6 +367,7 @@ impl HayateSender {
 ///     true // Accept the transfer
 /// }, |progress| {
 ///     println!("Received {progress} bytes");
+///     Ok(())
 /// }).await?;
 ///
 /// println!("Successfully saved to {} (Checksum: {})", path.display(), checksum);
@@ -439,7 +441,7 @@ impl HayateReceiver {
         self,
         output_dir: impl AsRef<Path>,
         consent_cb: impl FnOnce(&Metadata) -> bool,
-        progress_cb: impl FnMut(u64) + Send + 'static,
+        progress_cb: impl FnMut(u64) -> Result<(), EngineError> + Send + 'static,
     ) -> Result<(String, PathBuf), EngineError> {
         let output_dir = output_dir.as_ref();
 
@@ -544,7 +546,9 @@ mod tests {
         let mut state: u64 = 0x1234_5678_9abc_def0;
         let mut written = 0;
         while written < len {
-            state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
             let chunk_len = std::cmp::min(1024, len - written);
             let bytes: Vec<u8> = (0..chunk_len)
                 .map(|i| ((state >> (8 * (i % 8))) as u8).wrapping_add(i as u8))
@@ -573,12 +577,10 @@ mod tests {
         let runtime = compio::runtime::Runtime::new().expect("runtime should build");
         runtime
             .block_on(async move {
-                let receiver = HayateReceiver::new()
-                    .bind(receiver_addr)
-                    .auto_accept(true);
+                let receiver = HayateReceiver::new().bind(receiver_addr).auto_accept(true);
                 let recv_handle = compio::runtime::spawn(async move {
                     receiver
-                        .receive(&dst_dir_for_recv, |_| true, |_| {})
+                        .receive(&dst_dir_for_recv, |_| true, |_| Ok(()))
                         .await
                 });
 
@@ -586,7 +588,7 @@ mod tests {
 
                 let sender_checksum = HayateSender::new()
                     .target(receiver_addr)
-                    .send(&src_file_for_sender, |_| {})
+                    .send(&src_file_for_sender, |_| Ok(()))
                     .await?;
 
                 let receiver_result = recv_handle
@@ -619,12 +621,10 @@ mod tests {
         let runtime = compio::runtime::Runtime::new().expect("runtime should build");
         runtime
             .block_on(async move {
-                let receiver = HayateReceiver::new()
-                    .bind(receiver_addr)
-                    .auto_accept(true);
+                let receiver = HayateReceiver::new().bind(receiver_addr).auto_accept(true);
                 let recv_handle = compio::runtime::spawn(async move {
                     receiver
-                        .receive(&dst_dir_for_recv, |_| true, |_| {})
+                        .receive(&dst_dir_for_recv, |_| true, |_| Ok(()))
                         .await
                 });
 
@@ -632,7 +632,7 @@ mod tests {
 
                 let sender_checksum = HayateSender::new()
                     .target(receiver_addr)
-                    .send(&src_dir_for_sender, |_| {})
+                    .send(&src_dir_for_sender, |_| Ok(()))
                     .await?;
 
                 let receiver_result = recv_handle

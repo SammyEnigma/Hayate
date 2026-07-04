@@ -344,7 +344,7 @@ pub async fn send_payload<S>(
     compress: bool,
     filename: Option<&str>,
     hash_algo: &str,
-    mut progress_cb: impl FnMut(u64),
+    mut progress_cb: impl FnMut(u64) -> Result<(), EngineError> + Send + 'static,
 ) -> Result<String, EngineError>
 where
     S: compio::io::AsyncWrite + Unpin,
@@ -606,7 +606,7 @@ where
             let written_frame = write_all_owned(stream, frame).await?;
             enc_pool.release(written_frame);
             total += p_len as u64;
-            progress_cb(total);
+            progress_cb(total)?;
             next_index += 1;
         }
     }
@@ -675,7 +675,7 @@ pub async fn receive_payload<S>(
     transfer_type: u8,
     expected_size: u64,
     hash_algo: &str,
-    mut progress_cb: impl FnMut(u64) + 'static,
+    mut progress_cb: impl FnMut(u64) -> Result<(), EngineError> + 'static,
 ) -> Result<String, EngineError>
 where
     S: compio::io::AsyncRead + Unpin,
@@ -903,7 +903,7 @@ where
                         })?;
                     }
                 }
-                progress_cb(total);
+                progress_cb(total)?;
                 next_index += 1;
             }
         }
@@ -994,8 +994,12 @@ where
         // Max frame = flag (1) + encrypted chunk (CHUNK_SIZE + zstd worst case + nonce + tag).
         // Use a precise cap instead of an arbitrary 64 MiB constant to prevent a malformed
         // peer from forcing a large allocation before AEAD authentication runs.
-        let max_frame_len = 1 + 4 + CHUNK_SIZE + zstd::zstd_safe::compress_bound(CHUNK_SIZE)
-            + crypto::NONCE_LEN + crypto::TAG_LEN;
+        let max_frame_len = 1
+            + 4
+            + CHUNK_SIZE
+            + zstd::zstd_safe::compress_bound(CHUNK_SIZE)
+            + crypto::NONCE_LEN
+            + crypto::TAG_LEN;
         if frame_len == 0 || frame_len > max_frame_len {
             read_error = Some(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1059,7 +1063,7 @@ pub async fn send_payload_write(
     compress: bool,
     filename: Option<&str>,
     hash_algo: &str,
-    progress_cb: impl FnMut(u64),
+    progress_cb: impl FnMut(u64) -> Result<(), EngineError> + Send + 'static,
 ) -> Result<String, EngineError> {
     send_payload(
         key,
@@ -1088,7 +1092,7 @@ pub async fn receive_payload_split(
     transfer_type: u8,
     expected_size: u64,
     hash_algo: &str,
-    progress_cb: impl FnMut(u64) + 'static,
+    progress_cb: impl FnMut(u64) -> Result<(), EngineError> + 'static,
 ) -> Result<String, EngineError> {
     receive_payload(
         key,

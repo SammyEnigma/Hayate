@@ -13,7 +13,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use compio_quic::ConnectionError as QuicConnectionError;
 use hayate::{
-    local_addr, network,
+    EngineError, local_addr, network,
     protocol::{Metadata, TRANSFER_DIR},
     transfer,
 };
@@ -112,7 +112,7 @@ pub async fn run(args: ReceiveArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
         );
 
         let dest = if args.auto_accept {
-            Some(resolve_output(&args.output, &meta)?)
+            Some(resolve_output(&args.output, &meta))
         } else {
             prompt_accept(&meta, peer, &args.output)?
         };
@@ -155,11 +155,12 @@ pub async fn run(args: ReceiveArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
             &meta.hash_algo,
             move |bytes| {
                 if cancelled_clone.load(Ordering::SeqCst) {
-                    return;
+                    return Err(EngineError::Cancelled("transfer cancelled by user".into()));
                 }
                 if let Some(pb) = &pb_clone {
                     output::set_transfer_position(pb, bytes);
                 }
+                Ok(())
             },
         )
         .await
@@ -167,10 +168,6 @@ pub async fn run(args: ReceiveArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
 
         if let Some(pb) = &pb {
             output::finish_transfer_progress(pb, meta.total_size);
-        }
-
-        if cancelled.load(Ordering::SeqCst) {
-            bail!("transfer cancelled");
         }
 
         let checksum = checksum_result?;
@@ -308,7 +305,7 @@ pub async fn run(args: ReceiveArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
         );
 
         let dest = if args.auto_accept {
-            Some(resolve_output(&args.output, &meta)?)
+            Some(resolve_output(&args.output, &meta))
         } else {
             prompt_accept(&meta, peer, &args.output)?
         };
@@ -353,11 +350,12 @@ pub async fn run(args: ReceiveArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
             &meta.hash_algo,
             move |bytes| {
                 if cancelled_clone.load(Ordering::SeqCst) {
-                    return;
+                    return Err(EngineError::Cancelled("transfer cancelled by user".into()));
                 }
                 if let Some(pb) = &pb_clone {
                     output::set_transfer_position(pb, bytes);
                 }
+                Ok(())
             },
         )
         .await;
@@ -368,6 +366,10 @@ pub async fn run(args: ReceiveArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
 
         let checksum = match receive_result {
             Ok(checksum) => checksum,
+            Err(EngineError::Cancelled(_)) => {
+                output::err("Transfer cancelled");
+                break;
+            }
             Err(e) => {
                 output::err(&format!("Transfer failed: {e}"));
                 conn.close(1u32.into(), b"failed");
@@ -375,10 +377,6 @@ pub async fn run(args: ReceiveArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
                 continue;
             }
         };
-
-        if cancelled.load(Ordering::SeqCst) {
-            break;
-        }
 
         let elapsed = start.elapsed().as_secs_f64();
         output::print_transfer_summary(
@@ -533,11 +531,11 @@ fn prompt_accept(
     }
 }
 
-fn resolve_output(output_dir: &std::path::Path, meta: &Metadata) -> Result<PathBuf> {
+fn resolve_output(output_dir: &std::path::Path, meta: &Metadata) -> PathBuf {
     let name = std::path::Path::new(&meta.filename)
         .file_name()
         .unwrap_or_else(|| std::ffi::OsStr::new("received_file"));
-    Ok(output_dir.join(name))
+    output_dir.join(name)
 }
 
 // ── ESC / q listener ─────────────────────────────────────────────────────
