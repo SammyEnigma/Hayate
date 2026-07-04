@@ -936,7 +936,20 @@ where
                 )));
             }
         } else {
-            // TRANSFER_DIR
+            // TRANSFER_DIR. The metadata size is an estimate of file contents,
+            // not the tar stream size; allow tar header/padding overhead but
+            // cap the total to prevent a runaway peer from filling the disk.
+            let max_dir_size = expected_size
+                .saturating_mul(4)
+                .saturating_add(64 * 1024 * 1024);
+            if total > max_dir_size {
+                return Err(EngineError::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Directory transfer exceeded size ceiling: {total} bytes, max {max_dir_size} bytes"
+                    ),
+                )));
+            }
             if total < expected_size {
                 return Err(EngineError::Io(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
