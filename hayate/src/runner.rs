@@ -515,3 +515,148 @@ fn resolve_output(output_dir: &Path, meta: &Metadata) -> PathBuf {
         .unwrap_or_else(|| std::ffi::OsStr::new("received_file"));
     output_dir.join(name)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write as _;
+    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+    use std::path::{Path, PathBuf};
+
+    use super::{HayateReceiver, HayateSender};
+    use crate::EngineError;
+
+    fn pick_free_port() -> u16 {
+        let listener = std::net::TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+            .expect("bind should succeed");
+        listener.local_addr().unwrap().port()
+    }
+
+    fn unique_test_dir(prefix: &str) -> PathBuf {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("hayate-{prefix}-{now}"))
+    }
+
+    fn write_random_file(path: &Path, len: usize) {
+        let mut file = std::fs::File::create(path).unwrap();
+        let mut state: u64 = 0x1234_5678_9abc_def0;
+        let mut written = 0;
+        while written < len {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let chunk_len = std::cmp::min(1024, len - written);
+            let bytes: Vec<u8> = (0..chunk_len)
+                .map(|i| ((state >> (8 * (i % 8))) as u8).wrapping_add(i as u8))
+                .collect();
+            file.write_all(&bytes).unwrap();
+            written += chunk_len;
+        }
+        file.flush().unwrap();
+    }
+
+    #[test]
+    fn send_file_roundtrip_matches_checksum() {
+        let port = pick_free_port();
+        let src_dir = unique_test_dir("src");
+        let dst_dir = unique_test_dir("dst");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&dst_dir).unwrap();
+
+        let src_file = src_dir.join("payload.bin");
+        write_random_file(&src_file, 8 * 1024 * 1024 + 1234);
+
+        let receiver_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port));
+        let dst_dir_for_recv = dst_dir.clone();
+        let src_file_for_sender = src_file.clone();
+
+        let runtime = compio::runtime::Runtime::new().expect("runtime should build");
+        runtime
+            .block_on(async move {
+                let receiver = HayateReceiver::new()
+                    .bind(receiver_addr)
+                    .auto_accept(true);
+                let recv_handle = compio::runtime::spawn(async move {
+                    receiver
+                        .receive(&dst_dir_for_recv, |_| true, |_| {})
+                        .await
+                });
+
+                compio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+                let sender_checksum = HayateSender::new()
+                    .target(receiver_addr)
+                    .send(&src_file_for_sender, |_| {})
+                    .await?;
+
+                let receiver_result = recv_handle
+                    .await
+                    .map_err(|e| EngineError::Io(std::io::Error::other(e.to_string())))?;
+                let (receiver_checksum, _) = receiver_result?;
+                assert_eq!(sender_checksum, receiver_checksum);
+                Ok::<(), EngineError>(())
+            })
+            .expect("transfer should succeed");
+    }
+
+    #[test]
+    fn send_directory_roundtrip_extracts_and_matches_checksum() {
+        let port = pick_free_port();
+        let src_dir = unique_test_dir("src");
+        let dst_dir = unique_test_dir("dst");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&dst_dir).unwrap();
+
+        let nested = src_dir.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        write_random_file(&src_dir.join("top.txt"), 5_000);
+        write_random_file(&nested.join("deep.bin"), 2_000);
+
+        let receiver_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port));
+        let dst_dir_for_recv = dst_dir.clone();
+        let src_dir_for_sender = src_dir.clone();
+
+        let runtime = compio::runtime::Runtime::new().expect("runtime should build");
+        runtime
+            .block_on(async move {
+                let receiver = HayateReceiver::new()
+                    .bind(receiver_addr)
+                    .auto_accept(true);
+                let recv_handle = compio::runtime::spawn(async move {
+                    receiver
+                        .receive(&dst_dir_for_recv, |_| true, |_| {})
+                        .await
+                });
+
+                compio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+                let sender_checksum = HayateSender::new()
+                    .target(receiver_addr)
+                    .send(&src_dir_for_sender, |_| {})
+                    .await?;
+
+                let receiver_result = recv_handle
+                    .await
+                    .map_err(|e| EngineError::Io(std::io::Error::other(e.to_string())))?;
+                let (receiver_checksum, received_path) = receiver_result?;
+                assert_eq!(sender_checksum, receiver_checksum);
+
+                let top = received_path.join("top.txt");
+                let deep = received_path.join("nested").join("deep.bin");
+                assert!(top.exists());
+                assert!(deep.exists());
+
+                assert_eq!(
+                    std::fs::read(&src_dir_for_sender.join("top.txt")).unwrap(),
+                    std::fs::read(&top).unwrap()
+                );
+                assert_eq!(
+                    std::fs::read(&src_dir_for_sender.join("nested").join("deep.bin")).unwrap(),
+                    std::fs::read(&deep).unwrap()
+                );
+
+                Ok::<(), EngineError>(())
+            })
+            .expect("transfer should succeed");
+    }
+}
