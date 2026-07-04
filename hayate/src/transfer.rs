@@ -61,6 +61,13 @@ pub enum PayloadSink {
 // ---------------------------------------------------------------------------
 
 /// Helper for dynamic payload hashing.
+///
+/// This hash is an intentional end-to-end integrity check over the original
+/// plaintext content of the transferred file or directory. Each individual
+/// encrypted frame is already authenticated by the AEAD tag (ChaCha20-Poly1305
+/// or AES-GCM), so per-frame wire integrity is handled separately. The
+/// file-level hash lets the sender and receiver agree on the transferred
+/// content even if framing details differ.
 enum PayloadHasher {
     Blake3(Box<blake3::Hasher>),
     RapidHash(rapidhash::v3::RapidStreamHasherV3<'static>),
