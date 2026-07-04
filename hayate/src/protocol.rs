@@ -7,6 +7,7 @@
 //! | Sender to receiver | 2 | Protocol version, equal to [`PROTOCOL_VERSION`] |
 //! | Sender to receiver | 1 | Sender's preferred cipher capability |
 //! | Sender to receiver | 32 | Sender X25519 public key |
+//! | Sender to receiver | 32 | HKDF salt (random per session, sent in the clear) |
 //! | Receiver to sender | 32 | Receiver X25519 public key |
 //! | Receiver to sender | 1 | Selected cipher suite |
 //! | Sender to receiver | 4 | Encrypted metadata length |
@@ -30,7 +31,7 @@
 //! uncompressed payloads, [`FRAME_ZSTD`] for zstd-compressed payloads.
 
 /// Current binary wire protocol version.
-pub const PROTOCOL_VERSION: u16 = 5;
+pub const PROTOCOL_VERSION: u16 = 6;
 
 /// Metadata transfer type for a single file.
 pub const TRANSFER_FILE: u8 = 0x00;
@@ -54,9 +55,12 @@ pub const MAX_METADATA_ENCRYPTED: usize = 4 + MAX_FILENAME_BYTES + 8 + 1 + 1 + 2
 
 /// Chunk size for each data frame in bytes.
 ///
-/// One MiB amortizes per-frame crypto/framing overhead while keeping pipeline
-/// memory bounded for read-ahead, worker queues, and receiver buffering.
-pub const CHUNK_SIZE: usize = 1024 * 1024;
+/// 4 MiB amortises per-frame AEAD overhead (12-byte nonce + 16-byte tag) over
+/// a much larger payload. On Gigabit+ LAN this reduces frame-count by 4× vs
+/// the old 1 MiB size, cutting syscall and scheduler overhead proportionally.
+/// The pipeline pool and QUIC flow windows are sized to keep 8 frames in flight
+/// simultaneously, so peak buffer usage is ~256 MiB across sender + receiver.
+pub const CHUNK_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
 
 /// Metadata that travels in the encrypted handshake.
 #[derive(Debug, Clone)]

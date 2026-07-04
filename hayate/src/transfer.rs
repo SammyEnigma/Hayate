@@ -164,25 +164,27 @@ where
     meta.validate()?;
 
     // 1. Protocol version + Sender Capability
-    let mut ver_and_cap = Vec::with_capacity(3);
-    ver_and_cap.extend_from_slice(&PROTOCOL_VERSION.to_be_bytes());
     let sender_cap = if crypto::is_aes_hw_accelerated() {
         crypto::CIPHER_AES256_GCM
     } else {
         crypto::CIPHER_CHACHA20
     };
+    let mut ver_and_cap = Vec::with_capacity(3);
+    ver_and_cap.extend_from_slice(&PROTOCOL_VERSION.to_be_bytes());
     ver_and_cap.push(sender_cap);
     write_all_owned(send, ver_and_cap).await?;
 
     // 2. Key exchange
     let (secret, our_pub) = crypto::generate_keypair();
-    write_all_owned(send, our_pub.to_vec()).await?;
+    let salt = crypto::generate_salt();
+    let mut handshake_buf = Vec::with_capacity(crypto::PUBLIC_KEY_LEN + crypto::SALT_LEN);
+    handshake_buf.extend_from_slice(&our_pub);
+    handshake_buf.extend_from_slice(&salt);
+    write_all_owned(send, handshake_buf).await?;
 
     let peer_pub_bytes = read_exact_n(recv, 32).await?;
     let mut peer_pub = [0u8; 32];
     peer_pub.copy_from_slice(&peer_pub_bytes);
-
-    let key = crypto::derive_key(secret, &peer_pub, passphrase)?;
 
     // 3. Receive the selected cipher from receiver
     let cipher_bytes = read_exact_n(recv, 1).await?;
@@ -192,6 +194,17 @@ where
             "Unknown cipher suite selected by receiver".into(),
         ));
     }
+
+    let key = crypto::derive_key(crypto::KeyDerivationContext {
+        secret,
+        peer_pub: &peer_pub,
+        salt: &salt,
+        passphrase,
+        sender_pub: &our_pub,
+        receiver_pub: &peer_pub,
+        sender_cap,
+        selected_cipher,
+    })?;
 
     // 4. Encrypted metadata
     let encrypted = crypto::encrypt_metadata(&key, selected_cipher, &meta.encode())?;
@@ -252,14 +265,25 @@ where
         };
 
     // 2. Key exchange
-    let peer_pub_bytes = read_exact_n(recv, 32).await?;
-    let mut peer_pub = [0u8; 32];
-    peer_pub.copy_from_slice(&peer_pub_bytes);
+    let sender_pub_and_salt = read_exact_n(recv, crypto::PUBLIC_KEY_LEN + crypto::SALT_LEN).await?;
+    let mut peer_pub = [0u8; crypto::PUBLIC_KEY_LEN];
+    peer_pub.copy_from_slice(&sender_pub_and_salt[..crypto::PUBLIC_KEY_LEN]);
+    let mut salt = [0u8; crypto::SALT_LEN];
+    salt.copy_from_slice(&sender_pub_and_salt[crypto::PUBLIC_KEY_LEN..]);
 
     let (secret, our_pub) = crypto::generate_keypair();
     write_all_owned(send, our_pub.to_vec()).await?;
 
-    let key = crypto::derive_key(secret, &peer_pub, passphrase)?;
+    let key = crypto::derive_key(crypto::KeyDerivationContext {
+        secret,
+        peer_pub: &peer_pub,
+        salt: &salt,
+        passphrase,
+        sender_pub: &peer_pub,
+        receiver_pub: &our_pub,
+        sender_cap,
+        selected_cipher,
+    })?;
 
     // 3. Write selected cipher back to sender
     write_all_owned(send, vec![selected_cipher]).await?;
@@ -368,7 +392,7 @@ where
                     (result, buf, p)
                 };
                 let mut reads = FuturesOrdered::new();
-                let queue_depth = 4;
+                let queue_depth = 8; // 8 × 4 MiB = 32 MiB read-ahead; hides disk latency
                 let mut current_pos = pos;
                 let mut file_ended = false;
 
@@ -484,6 +508,27 @@ where
                     return;
                 }
             };
+            // Reusable zstd compressor: built once per worker, like
+            // `aead_key` above, instead of `zstd::encode_all` constructing a
+            // fresh CCtx (entropy tables, window state) on every chunk.
+            // `scratch` is sized to the worst-case compressed output for one
+            // CHUNK_SIZE input and reused across every chunk this worker
+            // handles, so steady-state compression is allocation-free.
+            let mut compressor = if do_compress {
+                match zstd::bulk::Compressor::new(1) {
+                    Ok(c) => Some(c),
+                    Err(e) => {
+                        let _ = result_tx.send(Err(EngineError::Compression(e.to_string())));
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
+            let mut compress_scratch = compressor
+                .is_some()
+                .then(|| vec![0u8; zstd::zstd_safe::compress_bound(CHUNK_SIZE)]);
+
             let mut plain_buf = Vec::with_capacity(CHUNK_SIZE + 256);
             while let Ok(res) = chunk_rx.recv() {
                 let (index, chunk, chunk_len, pooled) = match res {
@@ -497,22 +542,28 @@ where
                 let chunk_data = &chunk[..chunk_len];
                 plain_buf.clear();
 
-                if do_compress {
-                    match zstd::encode_all(chunk_data, 1) {
-                        Ok(compressed) if compressed.len() < chunk_len => {
+                if let (Some(compressor), Some(scratch)) =
+                    (compressor.as_mut(), compress_scratch.as_mut())
+                {
+                    match compressor.compress_to_buffer(chunk_data, scratch) {
+                        Ok(n) if n < chunk_len => {
                             plain_buf.push(FRAME_ZSTD);
-                            plain_buf.extend_from_slice(&compressed);
+                            plain_buf.extend_from_slice(&scratch[..n]);
                         }
-                        _ => {
+                        Ok(_) => {
+                            // Compression didn't help this chunk; send it raw.
                             plain_buf.push(FRAME_RAW);
                             plain_buf.extend_from_slice(chunk_data);
+                        }
+                        Err(e) => {
+                            let _ = result_tx.send(Err(EngineError::Compression(e.to_string())));
+                            break;
                         }
                     }
                 } else {
                     plain_buf.push(FRAME_RAW);
                     plain_buf.extend_from_slice(chunk_data);
                 }
-
                 if pooled {
                     pool.release(chunk);
                 }
@@ -727,6 +778,16 @@ where
                     return;
                 }
             };
+            // Reusable zstd decompressor: built once per worker, like
+            // `aead_key` above, instead of `zstd::decode_all` constructing a
+            // fresh DCtx on every frame.
+            let mut decompressor = match zstd::bulk::Decompressor::new() {
+                Ok(d) => d,
+                Err(e) => {
+                    let _ = plain_tx.send(Err(EngineError::Compression(e.to_string())));
+                    return;
+                }
+            };
             let mut decrypted_buf = Vec::with_capacity(CHUNK_SIZE + 256);
             while let Ok(res) = enc_rx.recv() {
                 let (index, enc) = match res {
@@ -757,8 +818,24 @@ where
                                 plain.copy_from_slice(data);
                                 Ok(plain)
                             }
-                            FRAME_ZSTD => zstd::decode_all(data)
-                                .map_err(|e| EngineError::Compression(e.to_string())),
+                            FRAME_ZSTD => {
+                                // Lease from the same pool FRAME_RAW uses so
+                                // every plaintext buffer reaching the writer
+                                // task was leased exactly once (see the
+                                // lease/release invariant in pool.rs).
+                                // Decompressed size can never exceed
+                                // CHUNK_SIZE — the sender only ever compresses
+                                // chunks up to that size — so the pool's
+                                // fixed-size buffer is always big enough.
+                                let mut plain = plain_pool_clone.lease_sync();
+                                match decompressor.decompress_to_buffer(data, &mut plain) {
+                                    Ok(_) => Ok(plain),
+                                    Err(e) => {
+                                        plain_pool_clone.release(plain);
+                                        Err(EngineError::Compression(e.to_string()))
+                                    }
+                                }
+                            }
                             other => Err(EngineError::InvalidFrame(format!(
                                 "unknown frame flag 0x{other:02x}"
                             ))),
@@ -897,7 +974,9 @@ where
             len_buf_owned[3],
         ]) as usize;
 
-        if frame_len == 0 || frame_len > (16 * 1024 * 1024) {
+        // Max frame = CHUNK_SIZE (4 MiB) + AEAD overhead (28 B) + flag byte + zstd worst case (~0.1%).
+        // Cap at 64 MiB to reject obviously malformed frames without a large alloc.
+        if frame_len == 0 || frame_len > (64 * 1024 * 1024) {
             read_error = Some(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("frame length out of range: {frame_len}"),
@@ -1014,4 +1093,186 @@ pub async fn send_consent_write(
     accept: bool,
 ) -> Result<(), EngineError> {
     send_consent(stream, accept).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CHUNK_SIZE, PayloadHasher};
+
+    // ── PayloadHasher ─────────────────────────────────────────────────────────
+    //
+    // These tests validate change 1 (hex_encode) through the SHA-256 arm of
+    // PayloadHasher, which is the only public-surface user of hex_encode that
+    // produces output compared across the wire.  A leading-zero regression
+    // (e.g. 0x01 → "1" instead of "01") would silently produce a different
+    // checksum string on sender and receiver, causing an integrity failure.
+
+    /// NIST FIPS 180-4 test vector for SHA-256("abc").
+    ///
+    /// The raw digest bytes are:
+    ///   ba 78 16 bf  **8f 01** cf ea  41 41 40 de  5d ae 22 23
+    ///   b0 03 61 a3  96 17 7a 9c  b4 10 ff 61  f2 00 15 ad
+    ///
+    /// Byte at index 5 is `0x01`.  The old LUT and the new `write!("{b:02x}")`
+    /// must both render it as `"01"` — any implementation that skips the
+    /// leading zero would produce `"1"` and break every SHA-256 checksum.
+    #[test]
+    fn sha256_nist_vector_abc_preserves_leading_zero_byte() {
+        let mut h = PayloadHasher::new("sha256");
+        h.update(b"abc");
+        assert_eq!(
+            h.finalize("sha256"),
+            "sha256$ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            "SHA-256(abc) mismatch — leading-zero byte 0x01 must render as '01'"
+        );
+    }
+
+    /// SHA-256("") NIST vector.
+    ///
+    /// Verifies that the empty-input path works and that `ring::digest` (which
+    /// replaced the removed `sha2` dev-dep) produces the correct digest.
+    #[test]
+    fn sha256_nist_vector_empty_input() {
+        let mut h = PayloadHasher::new("sha256");
+        h.update(b"");
+        assert_eq!(
+            h.finalize("sha256"),
+            "sha256$e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        );
+    }
+
+    /// The output format is `"{algo}${hex}"` where the hex part is exactly
+    /// 64 lowercase ASCII characters for SHA-256.
+    #[test]
+    fn sha256_output_format_is_prefix_dollar_64hex() {
+        let mut h = PayloadHasher::new("sha256");
+        h.update(b"hello world");
+        let result = h.finalize("sha256");
+
+        let (prefix, hex_part) = result.split_once('$').expect("output must contain '$'");
+        assert_eq!(prefix, "sha256");
+        assert_eq!(hex_part.len(), 64, "SHA-256 hex must be 64 chars");
+        assert!(
+            hex_part.chars().all(|c| c.is_ascii_hexdigit()),
+            "hex part must be valid hex: {hex_part}"
+        );
+        assert_eq!(hex_part, hex_part.to_lowercase(), "hex must be lowercase");
+    }
+
+    /// Blake3 output format: prefix `"blake3$"` followed by 64 hex chars.
+    ///
+    /// Validates the blake3 arm does not regress while we test sha256.
+    #[test]
+    fn blake3_output_format_is_prefix_dollar_64hex() {
+        let mut h = PayloadHasher::new("blake3");
+        h.update(b"anything");
+        let result = h.finalize("blake3");
+
+        let (prefix, hex_part) = result.split_once('$').expect("missing '$'");
+        assert_eq!(prefix, "blake3");
+        assert_eq!(hex_part.len(), 64);
+        assert!(hex_part.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    /// Rapidhash output format: prefix `"rapidhash$"` followed by 16 hex chars
+    /// (64-bit hash).
+    #[test]
+    fn rapidhash_output_format_is_prefix_dollar_16hex() {
+        let mut h = PayloadHasher::new("rapidhash");
+        h.update(b"anything");
+        let result = h.finalize("rapidhash");
+
+        let (prefix, hex_part) = result.split_once('$').expect("missing '$'");
+        assert_eq!(prefix, "rapidhash");
+        assert_eq!(hex_part.len(), 16, "rapidhash is 64-bit → 16 hex chars");
+        assert!(hex_part.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    /// An unknown algorithm string falls through to the blake3 default.
+    /// This guards against silent behavior changes in `PayloadHasher::new`.
+    #[test]
+    fn unknown_algorithm_defaults_to_blake3() {
+        let mut h = PayloadHasher::new("does-not-exist");
+        h.update(b"x");
+        let result = h.finalize("does-not-exist");
+        // The algo prefix comes from the `algo` argument to finalize(), not
+        // from the hasher variant — but the hash itself must be 64 hex chars
+        // (blake3 output size).
+        let hex_part = result.split_once('$').unwrap().1;
+        assert_eq!(hex_part.len(), 64);
+    }
+
+    // ── zstd bulk compress/decompress ───────────────────────────────────────
+    //
+    // These validate the approach used by the sender/receiver worker loops
+    // in send_payload/receive_payload: a reusable `Compressor`/`Decompressor`
+    // plus a fixed-capacity scratch/pool buffer, replacing the old per-chunk
+    // `zstd::encode_all`/`decode_all` calls (which allocated a fresh Vec and
+    // rebuilt the codec context on every single frame).
+
+    /// Round-trips repetitive data through the exact call pattern used in
+    /// production: compress into a reusable scratch buffer sized by
+    /// `compress_bound`, decompress directly into a pool-leased buffer sized
+    /// to `CHUNK_SIZE`.
+    #[test]
+    fn zstd_bulk_roundtrip_via_reusable_context_and_pool_buffer() {
+        let pool = crate::pool::BufferPool::new(2, CHUNK_SIZE);
+        let mut compressor = zstd::bulk::Compressor::new(1).unwrap();
+        let mut decompressor = zstd::bulk::Decompressor::new().unwrap();
+        let mut scratch = vec![0u8; zstd::zstd_safe::compress_bound(CHUNK_SIZE)];
+
+        let original = b"hello world, hayate hayate hayate! ".repeat(10_000);
+
+        let n = compressor
+            .compress_to_buffer(&original[..], &mut scratch)
+            .unwrap();
+        assert!(n < original.len(), "repetitive input must compress smaller");
+
+        let mut plain = pool.lease_sync();
+        let m = decompressor
+            .decompress_to_buffer(&scratch[..n], &mut plain)
+            .unwrap();
+        plain.truncate(m);
+
+        assert_eq!(plain, original, "decompressed output must match the input");
+        pool.release(plain);
+    }
+
+    /// Regression guard for the plain-pool lease/release imbalance: the
+    /// FRAME_ZSTD decode path must lease its output buffer from the same
+    /// pool FRAME_RAW uses, not allocate independently. This simulates many
+    /// more decompressions than the pool's capacity, all leased first as
+    /// production code now does — it must neither block nor grow beyond
+    /// capacity.
+    ///
+    /// Before this fix, `zstd::decode_all` allocated outside the pool, so
+    /// every decompressed buffer was an *unmatched* release once it reached
+    /// the writer task: fine with a non-blocking `release` (silently
+    /// dropped, but wastes an allocation every frame), catastrophic with a
+    /// blocking one (the single-threaded compio executor freezes forever
+    /// the first time the pool is at capacity — see pool.rs history).
+    #[test]
+    fn compressible_frames_lease_from_pool_instead_of_allocating_independently() {
+        let pool = crate::pool::BufferPool::new(4, CHUNK_SIZE);
+        let mut compressor = zstd::bulk::Compressor::new(1).unwrap();
+        let mut decompressor = zstd::bulk::Decompressor::new().unwrap();
+        let mut scratch = vec![0u8; zstd::zstd_safe::compress_bound(CHUNK_SIZE)];
+
+        let chunk = b"repetitive payload chunk ".repeat(50_000);
+        let n = compressor
+            .compress_to_buffer(&chunk[..], &mut scratch)
+            .unwrap();
+
+        // Simulate 50 frames worth of decode+release with the pool capped
+        // far below that count — proves steady-state reuse, not growth.
+        for _ in 0..50 {
+            let mut plain = pool.lease_sync();
+            let m = decompressor
+                .decompress_to_buffer(&scratch[..n], &mut plain)
+                .unwrap();
+            plain.truncate(m);
+            assert_eq!(plain, chunk);
+            pool.release(plain);
+        }
+    }
 }

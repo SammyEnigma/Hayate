@@ -132,6 +132,11 @@
 //! * Unknown transfer types are rejected before receive routing.
 //! * Payload frames are length-capped and AEAD-authenticated before writes.
 //! * Directory extraction rejects absolute paths, `..`, symlinks, and hard links.
+//! * Each transfer uses a fresh random HKDF salt and a transcript-bound key
+//!   derivation. When a passphrase is used, it is mixed into the IKM; this
+//!   authenticates the session against an eavesdropper but is **not a PAKE** on
+//!   its own — offline brute-force resistance depends on the word-list entropy
+//!   (see the CLI word-list hardening in the matching Tier 2 change).
 //! * Receive task failures are returned as [`EngineError`] instead of panicking.
 //!
 //! ## Runtime
