@@ -978,12 +978,15 @@ where
             len_buf_owned[3],
         ]) as usize;
 
-        // Max frame = CHUNK_SIZE (4 MiB) + AEAD overhead (28 B) + flag byte + zstd worst case (~0.1%).
-        // Cap at 64 MiB to reject obviously malformed frames without a large alloc.
-        if frame_len == 0 || frame_len > (64 * 1024 * 1024) {
+        // Max frame = flag (1) + encrypted chunk (CHUNK_SIZE + zstd worst case + nonce + tag).
+        // Use a precise cap instead of an arbitrary 64 MiB constant to prevent a malformed
+        // peer from forcing a large allocation before AEAD authentication runs.
+        let max_frame_len = 1 + 4 + CHUNK_SIZE + zstd::zstd_safe::compress_bound(CHUNK_SIZE)
+            + crypto::NONCE_LEN + crypto::TAG_LEN;
+        if frame_len == 0 || frame_len > max_frame_len {
             read_error = Some(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("frame length out of range: {frame_len}"),
+                format!("frame length out of range: {frame_len}, max {max_frame_len}"),
             ));
             break;
         }
