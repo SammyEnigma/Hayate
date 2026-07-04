@@ -3,7 +3,7 @@
 use std::{net::IpAddr, path::PathBuf};
 
 use clap::builder::styling::{AnsiColor, Effects, Styles};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 pub fn cli_styles() -> Styles {
     Styles::styled()
@@ -11,6 +11,17 @@ pub fn cli_styles() -> Styles {
         .usage(AnsiColor::Green.on_default().effects(Effects::BOLD))
         .literal(AnsiColor::Cyan.on_default().effects(Effects::BOLD))
         .placeholder(AnsiColor::Yellow.on_default())
+}
+
+/// Explicit color policy, following the convention set by `git`, `ripgrep`, and `eza`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum ColorMode {
+    /// Color when stdout is a terminal; honors `NO_COLOR` / `CLICOLOR` / `CLICOLOR_FORCE`.
+    Auto,
+    /// Always emit color, even when redirected to a file or pipe.
+    Always,
+    /// Never emit color.
+    Never,
 }
 
 /// Hayate — encrypted, compressed, blazing-fast LAN file transfer.
@@ -33,6 +44,10 @@ Examples:
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
+
+    /// Control colored output.
+    #[arg(long, global = true, value_enum, default_value_t = ColorMode::Auto)]
+    pub color: ColorMode,
 }
 
 #[derive(Subcommand, Debug)]
@@ -48,6 +63,9 @@ pub enum Command {
     /// Scan the local network for active Hayate receivers.
     #[command(alias = "scan")]
     Discover(DiscoverArgs),
+
+    /// Generate shell completion scripts.
+    Completions(CompletionsArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -85,10 +103,6 @@ pub struct SendArgs {
     /// Receiver address in the form `ip:port` or `hostname:port`.
     pub target: Option<String>,
 
-    /// Receiver address in the form `ip:port` or `hostname:port` (compat option).
-    #[arg(long)]
-    pub peer: Option<String>,
-
     /// Cryptographic code-phrase for pairing.
     #[arg(long)]
     pub code: Option<String>,
@@ -97,7 +111,7 @@ pub struct SendArgs {
     #[arg(short = 'z', long, default_value_t = true, action = clap::ArgAction::Set)]
     pub compress: bool,
 
-    /// Hash algorithm for payload integrity (blake3, rapidhash, sha256).
+    /// Hash algorithm for payload integrity (blake3, sha256).
     #[arg(long, default_value = "blake3")]
     pub hash: String,
 
@@ -115,4 +129,11 @@ pub struct DiscoverArgs {
     /// Override the subnet CIDR to scan (e.g. 192.168.1.0/24).
     #[arg(long)]
     pub cidr: Option<String>,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct CompletionsArgs {
+    /// Shell to generate a completion script for.
+    #[arg(value_enum)]
+    pub shell: clap_complete::Shell,
 }

@@ -68,20 +68,24 @@ pub enum PayloadSink {
 /// or AES-GCM), so per-frame wire integrity is handled separately. The
 /// file-level hash lets the sender and receiver agree on the transferred
 /// content even if framing details differ.
+///
+/// Supported algorithms are `blake3` and `sha256`. Unknown algorithms are
+/// rejected rather than silently defaulted to a known value.
 enum PayloadHasher {
     Blake3(Box<blake3::Hasher>),
-    RapidHash(rapidhash::v3::RapidStreamHasherV3<'static>),
-    Sha256(ring::digest::Context),
+    Sha256(Box<ring::digest::Context>),
 }
 
 impl PayloadHasher {
-    fn new(algo: &str) -> Self {
+    fn new(algo: &str) -> Result<Self, EngineError> {
         match algo {
-            "rapidhash" => Self::RapidHash(rapidhash::v3::RapidStreamHasherV3::new(
-                &rapidhash::v3::DEFAULT_RAPID_SECRETS,
-            )),
-            "sha256" => Self::Sha256(ring::digest::Context::new(&ring::digest::SHA256)),
-            _ => Self::Blake3(Box::new(blake3::Hasher::new())),
+            "blake3" => Ok(Self::Blake3(Box::new(blake3::Hasher::new()))),
+            "sha256" => Ok(Self::Sha256(Box::new(ring::digest::Context::new(
+                &ring::digest::SHA256,
+            )))),
+            _ => Err(EngineError::InvalidFrame(format!(
+                "unknown hash algorithm: {algo}"
+            ))),
         }
     }
 
@@ -90,9 +94,6 @@ impl PayloadHasher {
             Self::Blake3(h) => {
                 h.update(data);
             }
-            Self::RapidHash(h) => {
-                h.write(data);
-            }
             Self::Sha256(h) => {
                 h.update(data);
             }
@@ -100,14 +101,8 @@ impl PayloadHasher {
     }
 
     fn finalize(self, algo: &str) -> String {
-        use std::fmt::Write;
         let hex_hash = match self {
             Self::Blake3(h) => h.finalize().to_hex().to_string(),
-            Self::RapidHash(h) => {
-                let mut s = String::with_capacity(17);
-                let _ = write!(s, "{:016x}", h.finish());
-                s
-            }
             Self::Sha256(h) => crate::hex_encode(h.finish().as_ref()),
         };
         format!("{algo}${hex_hash}")
@@ -389,7 +384,8 @@ where
     let algo = hash_algo.to_owned();
     compio::runtime::spawn(async move {
         let mut index = 0;
-        let mut hasher = PayloadHasher::new(&algo);
+        let mut hasher =
+            PayloadHasher::new(&algo).expect("hash algorithm is validated before payload transfer");
 
         match source {
             PayloadSource::File { file, pos } => {
@@ -874,7 +870,8 @@ where
     let algo = hash_algo.to_owned();
     let plain_pool_clone = plain_pool.clone();
     let write_handle = compio::runtime::spawn(async move {
-        let mut hasher = PayloadHasher::new(&algo);
+        let mut hasher =
+            PayloadHasher::new(&algo).expect("hash algorithm is validated before payload transfer");
         let mut total: u64 = 0;
         let mut pos: u64 = 0;
         let mut next_index = 0;
@@ -1125,7 +1122,7 @@ mod tests {
     /// leading zero would produce `"1"` and break every SHA-256 checksum.
     #[test]
     fn sha256_nist_vector_abc_preserves_leading_zero_byte() {
-        let mut h = PayloadHasher::new("sha256");
+        let mut h = PayloadHasher::new("sha256").unwrap();
         h.update(b"abc");
         assert_eq!(
             h.finalize("sha256"),
@@ -1140,7 +1137,7 @@ mod tests {
     /// replaced the removed `sha2` dev-dep) produces the correct digest.
     #[test]
     fn sha256_nist_vector_empty_input() {
-        let mut h = PayloadHasher::new("sha256");
+        let mut h = PayloadHasher::new("sha256").unwrap();
         h.update(b"");
         assert_eq!(
             h.finalize("sha256"),
@@ -1152,7 +1149,7 @@ mod tests {
     /// 64 lowercase ASCII characters for SHA-256.
     #[test]
     fn sha256_output_format_is_prefix_dollar_64hex() {
-        let mut h = PayloadHasher::new("sha256");
+        let mut h = PayloadHasher::new("sha256").unwrap();
         h.update(b"hello world");
         let result = h.finalize("sha256");
 
@@ -1171,7 +1168,7 @@ mod tests {
     /// Validates the blake3 arm does not regress while we test sha256.
     #[test]
     fn blake3_output_format_is_prefix_dollar_64hex() {
-        let mut h = PayloadHasher::new("blake3");
+        let mut h = PayloadHasher::new("blake3").unwrap();
         h.update(b"anything");
         let result = h.finalize("blake3");
 
@@ -1181,32 +1178,10 @@ mod tests {
         assert!(hex_part.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
-    /// Rapidhash output format: prefix `"rapidhash$"` followed by 16 hex chars
-    /// (64-bit hash).
     #[test]
-    fn rapidhash_output_format_is_prefix_dollar_16hex() {
-        let mut h = PayloadHasher::new("rapidhash");
-        h.update(b"anything");
-        let result = h.finalize("rapidhash");
-
-        let (prefix, hex_part) = result.split_once('$').expect("missing '$'");
-        assert_eq!(prefix, "rapidhash");
-        assert_eq!(hex_part.len(), 16, "rapidhash is 64-bit → 16 hex chars");
-        assert!(hex_part.chars().all(|c| c.is_ascii_hexdigit()));
-    }
-
-    /// An unknown algorithm string falls through to the blake3 default.
-    /// This guards against silent behavior changes in `PayloadHasher::new`.
-    #[test]
-    fn unknown_algorithm_defaults_to_blake3() {
-        let mut h = PayloadHasher::new("does-not-exist");
-        h.update(b"x");
-        let result = h.finalize("does-not-exist");
-        // The algo prefix comes from the `algo` argument to finalize(), not
-        // from the hasher variant — but the hash itself must be 64 hex chars
-        // (blake3 output size).
-        let hex_part = result.split_once('$').unwrap().1;
-        assert_eq!(hex_part.len(), 64);
+    fn unknown_algorithm_is_rejected() {
+        let result = PayloadHasher::new("does-not-exist");
+        assert!(result.is_err(), "unknown hash algorithm must be rejected");
     }
 
     // ── zstd bulk compress/decompress ───────────────────────────────────────
