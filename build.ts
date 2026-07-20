@@ -313,12 +313,16 @@ function canBuild(target: Target, host: string): boolean {
 let _hasCargoZigbuild: boolean | undefined;
 function hasCargoZigbuildSync(): boolean {
   if (_hasCargoZigbuild === undefined) {
-    const result = Bun.spawnSync({
-      cmd: ["cargo-zigbuild", "--version"],
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    _hasCargoZigbuild = result.success;
+    try {
+      const result = Bun.spawnSync({
+        cmd: ["cargo-zigbuild", "--version"],
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      _hasCargoZigbuild = result.success;
+    } catch {
+      _hasCargoZigbuild = false;
+    }
   }
   return _hasCargoZigbuild;
 }
