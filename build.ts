@@ -327,6 +327,23 @@ function hasCargoZigbuildSync(): boolean {
   return _hasCargoZigbuild;
 }
 
+let _hasCargoNdk: boolean | undefined;
+function hasCargoNdkSync(): boolean {
+  if (_hasCargoNdk === undefined) {
+    try {
+      const result = Bun.spawnSync({
+        cmd: ["cargo", "ndk", "--version"],
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      _hasCargoNdk = result.success;
+    } catch {
+      _hasCargoNdk = false;
+    }
+  }
+  return _hasCargoNdk;
+}
+
 async function buildNativeHost(host: string, verbose: boolean): Promise<void> {
   const isZig = host.includes("linux") && hasCargoZigbuildSync();
   const builder = isZig ? "cargo-zigbuild" : "cargo";
@@ -374,7 +391,7 @@ async function buildTarget(
     return {};
   }
 
-  const staging = join(releaseDir, ".staging", target.triple);
+  const staging = join(import.meta.dir, releaseDir, ".staging", target.triple);
   rmSync(staging, { recursive: true, force: true });
   mkdirSync(staging, { recursive: true });
 
@@ -401,16 +418,13 @@ async function buildTarget(
 }
 
 async function pickBuilder(target: Target): Promise<string> {
-  if (target.os === "android") {
-    if (await hasCommand("cargo-ndk")) return "cargo-ndk";
-    return "cargo";
-  }
-  if (target.zigbuild && hasCargoZigbuildSync()) return "cargo-zigbuild";
+  // cargo-ndk is a `cargo` subcommand, so the base builder is always `cargo`;
+  // buildArgsFor adds the `ndk ... --` prefix when cargo-ndk is available.
   return "cargo";
 }
 
 function buildArgsFor(target: Target, builder: string): string[] {
-  if (builder === "cargo-ndk") {
+  if (target.os === "android" && target.ndk && hasCargoNdkSync()) {
     return [
       "ndk",
       "--target",
@@ -421,6 +435,9 @@ function buildArgsFor(target: Target, builder: string): string[] {
       "--package",
       "hayate-cli",
     ];
+  }
+  if (target.zigbuild && hasCargoZigbuildSync()) {
+    return ["build", "--release", "--package", "hayate-cli", "--target", target.triple];
   }
   return ["build", "--release", "--package", "hayate-cli", "--target", target.triple];
 }
