@@ -47,3 +47,17 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
+
+      # The `release: published` event does not reliably fire when the release
+      # is created by this workflow via the default GITHUB_TOKEN, so trigger the
+      # binary/npm build explicitly once Tegami has created the release.
+      - name: Trigger Release Binaries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag=$(gh release list --repo ${{ github.repository }} \
+            --limit 1 --json tagName --jq '.[0].tagName')
+          echo "Triggering Release Binaries for tag: $tag"
+          gh workflow run release-binaries.yml \
+            --repo ${{ github.repository }} --ref "${{ github.ref }}" \
+            -f tag="$tag"

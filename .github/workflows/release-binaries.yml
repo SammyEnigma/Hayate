@@ -1,9 +1,23 @@
 name: Release Binaries
 
 on:
-  release:
-    types:
-      - published
+  # Triggered explicitly by the Publish workflow after it creates the GitHub
+  # release. The `release: published` event does not reliably fire when the
+  # release is created by another workflow using the default GITHUB_TOKEN, so
+  # Publish invokes this directly via `workflow_call` instead.
+  workflow_call:
+    inputs:
+      tag:
+        description: Git tag of the release to build binaries for
+        required: true
+        type: string
+  # Allows manual triggering (e.g. re-running binaries for an existing release).
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Git tag of the release to build binaries for
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -90,7 +104,7 @@ jobs:
           shopt -s nullglob
           files=(dist/*)
           if [[ ${#files[@]} -gt 0 ]]; then
-            gh release upload "${{ github.event.release.tag_name }}" dist/* \
+            gh release upload "${{ github.event.release.tag_name || inputs.tag }}" dist/* \
               --repo ${{ github.repository }} --clobber
           else
             echo "No artifacts in dist/ to upload"
@@ -107,7 +121,7 @@ jobs:
       - name: Download release assets
         run: |
           mkdir -p assets
-          gh release download "${{ github.event.release.tag_name }}" \
+          gh release download "${{ github.event.release.tag_name || inputs.tag }}" \
             --repo ${{ github.repository }} -D assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -119,7 +133,7 @@ jobs:
 
       - name: Upload SHA256SUMS
         run: |
-          gh release upload "${{ github.event.release.tag_name }}" SHA256SUMS.txt \
+          gh release upload "${{ github.event.release.tag_name || inputs.tag }}" SHA256SUMS.txt \
             --repo ${{ github.repository }} --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -153,4 +167,4 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Publish npm packages
-        run: bun run npm:release --tag "${{ github.event.release.tag_name }}"
+        run: bun run npm:release --tag "${{ github.event.release.tag_name || inputs.tag }}"

@@ -58,7 +58,7 @@ Merging the version PR triggers the `Publish` workflow (`.github/workflows/publi
 
 ### 4. Binary release
 
-The `release-binaries` workflow (`.github/workflows/release-binaries.yml`) runs on the release event and builds:
+The `release-binaries` workflow (`.github/workflows/release-binaries.yml`) is invoked directly by the `publish` workflow via `workflow_call` (not the `release: published` event, which does not reliably fire when the release is created by another workflow using the default `GITHUB_TOKEN`). It builds:
 
 | Target | Archive | Extras |
 | ------ | ------- | ------ |
