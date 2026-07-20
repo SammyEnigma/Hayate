@@ -1,4 +1,5 @@
-//! Terminal output helpers: banner, status lines, progress bars, cards, and summaries.
+//! Terminal output helpers: banner, status lines, progress bars, cards, and
+//! summaries.
 //!
 //! All visual output flows through this module so the rest of the CLI never
 //! constructs raw ANSI escapes or guesses column widths.
@@ -7,38 +8,158 @@
 //! some Termux configurations), box-drawing glyphs fall back to plain ASCII.
 
 use std::io::IsTerminal;
+use std::sync::OnceLock;
 
 use console::style;
-use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
 const VERSION: &str = env!("GIT_VERSION");
 
+// Global MultiProgress manager. Using a single MultiProgress even for one bar
+// lets us safely println during active bars and suspend for prompts without
+// corrupting the terminal. MultiProgress::new is cheap and safe to create even
+// when not a TTY.
+static MULTI: OnceLock<MultiProgress> = OnceLock::new();
+
+/// Returns the shared `MultiProgress` instance.
+///
+/// All spinners and progress bars should be created through this manager so
+/// plain status messages can be printed safely while bars are active.
+#[inline]
+pub fn multi() -> &'static MultiProgress {
+    MULTI.get_or_init(MultiProgress::new)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// Terminal capability detection
+// Machine-readable (JSON) output
+// ─────────────────────────────────────────────────────────────────────────────
+
+use serde::Serialize;
+
+/// A single structured event emitted on `--format json`.
+///
+/// Every meaningful status change (stages, peer discovery, transfer offers and
+/// completion, errors) is mirrored here so automation can consume Hayate's
+/// output without parsing ANSI-decorated text. Events are newline-delimited
+/// JSON objects on stdout (errors on stderr), each tagged with an `event`
+/// field.
+#[derive(Serialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+enum JsonEvent {
+    Status {
+        level: String,
+        message: String,
+    },
+    Stage {
+        stage: String,
+        detail: String,
+    },
+    Field {
+        key: String,
+        value: String,
+    },
+    PairingCode {
+        code: String,
+        command: String,
+    },
+    Peer {
+        name: String,
+        address: String,
+        os: String,
+        rtt_ms: Option<f64>,
+    },
+    DiscoverSummary {
+        count: usize,
+    },
+    TransferOffer {
+        filename: String,
+        size: u64,
+        kind: String,
+        from: String,
+        cipher: String,
+        hash: String,
+    },
+    TransferInfo {
+        title: String,
+        fields: std::collections::HashMap<String, String>,
+    },
+    TransferComplete {
+        filename: String,
+        size: u64,
+        elapsed_secs: f64,
+        speed_bps: u64,
+        checksum: String,
+        cipher: String,
+        compressed: bool,
+    },
+    Bound {
+        address: String,
+        backend: String,
+    },
+    BoundAddresses {
+        addresses: Vec<String>,
+    },
+    Error {
+        message: String,
+    },
+}
+
+/// Emits a JSON event to stdout (flushed) when the active policy is JSON mode.
+/// In any other mode this is a no-op.
+fn json_stdout(event: JsonEvent) {
+    if !crate::policy::get().is_json() {
+        return;
+    }
+    if let Ok(line) = serde_json::to_string(&event) {
+        use std::io::Write;
+        let mut lock = std::io::stdout().lock();
+        let _ = writeln!(lock, "{line}");
+        let _ = lock.flush();
+    }
+}
+
+/// Emits a JSON error event to stderr (flushed) when the active policy is JSON
+/// mode. In any other mode this is a no-op.
+fn json_stderr(event: JsonEvent) {
+    if !crate::policy::get().is_json() {
+        return;
+    }
+    if let Ok(line) = serde_json::to_string(&event) {
+        eprintln!("{line}");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Terminal capability detection (width, TTY, Unicode)
 // ─────────────────────────────────────────────────────────────────────────────
 
 thread_local! {
-    /// Whether the output terminal supports Unicode.
-    static UNICODE_CAPABLE: bool = {
-        // NO_COLOR-conformant terminals are assumed to handle Unicode
-        // reasonably well. For Windows, we fall back to ASCII if the
-        // terminal doesn't claim UTF-8 support.
-        if cfg!(windows) {
-            // On Windows, only enable Unicode box drawing if the console
-            // output code page is 65001 (UTF-8).
-            std::env::var_os("WT_SESSION").is_some()
-                || std::env::var_os("TERM_PROGRAM").is_some()
-        } else {
-            // On Unix/macOS/Termux, assume Unicode is available.
-            true
-        }
-    };
+    /// Whether the output terminal supports Unicode box-drawing glyphs.
+    static UNICODE_CAPABLE: bool = detect_unicode_capable();
 
-    /// Whether stdout is a true terminal (not piped/redirected).
-    static IS_TTY: bool = std::io::stdout().is_terminal();
+    /// Whether stderr is a true terminal (not piped/redirected).
+    ///
+    /// MultiProgress defaults to stderr, so we use stderr TTY status as the gate.
+    static IS_TTY: bool = std::io::stderr().is_terminal();
 }
 
-/// Returns `true` when stdout is a real terminal (not piped or redirected).
+fn detect_unicode_capable() -> bool {
+    if std::env::var_os("HAYATE_ASCII").is_some_and(|v| !v.is_empty()) {
+        return false;
+    }
+    if std::env::var_os("TERM").is_some_and(|t| t == "dumb") {
+        return false;
+    }
+    if cfg!(windows) {
+        std::env::var_os("WT_SESSION").is_some()
+            || std::env::var_os("TERM_PROGRAM").is_some()
+            || std::env::var_os("WT_PROFILE_ID").is_some()
+    } else {
+        true
+    }
+}
+
+/// Returns `true` when stderr is a real terminal (not piped or redirected).
 #[inline]
 pub fn is_tty() -> bool {
     IS_TTY.with(|v| *v)
@@ -48,6 +169,44 @@ pub fn is_tty() -> bool {
 #[inline]
 pub fn unicode_capable() -> bool {
     UNICODE_CAPABLE.with(|v| *v)
+}
+
+/// Detect terminal width: ioctl, then `$COLUMNS`, then 80.
+///
+/// Clamped so status cards stay readable on both tiny and huge terminals.
+#[must_use]
+pub fn terminal_width() -> usize {
+    let raw = platform_terminal_width()
+        .or_else(|| {
+            std::env::var("COLUMNS").ok().and_then(|c| c.parse::<u16>().ok()).filter(|w| *w > 0)
+        })
+        .unwrap_or(80) as usize;
+    raw.clamp(40, 120)
+}
+
+/// Inner content width for framed cards (leaves room for margins and borders).
+#[must_use]
+pub fn card_inner_width() -> usize {
+    terminal_width().saturating_sub(8).clamp(36, 72)
+}
+
+#[cfg(unix)]
+fn platform_terminal_width() -> Option<u16> {
+    // SAFETY: zeroed winsize + ioctl TIOCGWINSZ on stderr is the standard
+    // terminal-size query; non-zero return means ioctl failed.
+    unsafe {
+        let mut ws: libc::winsize = std::mem::zeroed();
+        if libc::ioctl(libc::STDERR_FILENO, libc::TIOCGWINSZ, &mut ws) == 0 && ws.ws_col > 0 {
+            Some(ws.ws_col)
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn platform_terminal_width() -> Option<u16> {
+    None
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -73,7 +232,8 @@ fn icon_dot() -> &'static str {
     if unicode_capable() { "●" } else { "*" }
 }
 fn icon_lock() -> &'static str {
-    if unicode_capable() { "🔒" } else { "(lock)" }
+    // No emoji — geometric mark only.
+    "#"
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -92,10 +252,10 @@ fn box_bl() -> &'static str {
 fn box_br() -> &'static str {
     if unicode_capable() { "╯" } else { "+" }
 }
-fn box_h() -> &'static str {
+pub(crate) fn box_h() -> &'static str {
     if unicode_capable() { "─" } else { "-" }
 }
-fn box_v() -> &'static str {
+pub(crate) fn box_v() -> &'static str {
     if unicode_capable() { "│" } else { "|" }
 }
 
@@ -104,111 +264,160 @@ fn box_line(width: usize) -> String {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Banner
-// ─────────────────────────────────────────────────────────────────────────────
-
-pub fn print_banner() {
-    let term = console::Term::stdout();
-    let width = term.size_checked().map(|(_, w)| w).unwrap_or(80);
-
-    if unicode_capable() && width >= 45 {
-        let logo = r#"
-    __  _______  _____  ____________
-   / / / /   \ \/ /   |/_  __/ ____/
-  / /_/ / /| |\  / /| | / / / __/   
- / __  / ___ |/ / ___ |/ / / /___   
-/_/ /_/_/  |_/_/_/  |_/_/ /_____/   
-"#;
-        println!("{}", style(logo).bold().cyan());
-    } else {
-        let logo = r#"
-  _  _   ___   ___ _____ ___ 
- | || | /_\ \ / /_\_   _| __|
- | __ |/ _ \ V / _ \| | | _| 
- |_||_/_/ \_\_/_/ \_\_| |___|
-"#;
-        println!("{}", style(logo).bold().cyan());
-    }
-
-    let separator = if unicode_capable() { "━" } else { "=" };
-    println!(
-        "   {} {} {} {} {}",
-        style("Hayate").bold().green(),
-        style("│").dim(),
-        style("encrypted LAN transfer").white(),
-        style("│").dim(),
-        style(format!("v{VERSION}")).cyan().bold()
-    );
-    println!("   {}", style(separator.repeat(50)).dim());
-    println!();
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Status lines
+// Status lines — route through MultiProgress when a bar may be active
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub fn info(msg: &str) {
-    println!(
-        "   {}  {}",
-        style(icon_info()).bold().blue(),
-        style(msg).white()
-    );
+    json_stdout(JsonEvent::Status { level: "info".into(), message: msg.to_owned() });
+    if crate::policy::get().is_json() {
+        return;
+    }
+    let text = format!("   {}  {}", style(icon_info()).bold().blue(), style(msg).white());
+    if is_tty() {
+        let _ = multi().println(text);
+    } else {
+        println!("{text}");
+    }
 }
 
 pub fn ok(msg: &str) {
-    println!("   {}  {}", style(icon_ok()).bold().green(), msg);
+    json_stdout(JsonEvent::Status { level: "ok".into(), message: msg.to_owned() });
+    if crate::policy::get().is_json() {
+        return;
+    }
+    let text = format!("   {}  {}", style(icon_ok()).bold().green(), msg);
+    if is_tty() {
+        let _ = multi().println(text);
+    } else {
+        println!("{text}");
+    }
 }
 
 pub fn warn(msg: &str) {
-    println!(
-        "   {}  {}",
-        style(icon_warn()).bold().yellow(),
-        style(msg).yellow()
-    );
+    json_stdout(JsonEvent::Status { level: "warn".into(), message: msg.to_owned() });
+    if crate::policy::get().is_json() {
+        return;
+    }
+    let text = format!("   {}  {}", style(icon_warn()).bold().yellow(), style(msg).yellow());
+    if is_tty() {
+        let _ = multi().println(text);
+    } else {
+        println!("{text}");
+    }
 }
 
 pub fn err(msg: &str) {
-    eprintln!(
-        "   {}  {}",
-        style(icon_err()).bold().red(),
-        style(msg).red()
-    );
+    json_stderr(JsonEvent::Error { message: msg.to_owned() });
+    if crate::policy::get().is_json() {
+        return;
+    }
+    let text = format!("   {}  {}", style(icon_err()).bold().red(), style(msg).red());
+    if is_tty() {
+        let _ = multi().println(text);
+    } else {
+        eprintln!("{text}");
+    }
 }
 
 pub fn print_error(err: &anyhow::Error) {
+    json_stderr(JsonEvent::Error { message: err.to_string() });
+    if crate::policy::get().is_json() {
+        return;
+    }
+    let mut lines = Vec::new();
     let mut chain = err.chain();
     let branch = if unicode_capable() { "└─" } else { "`-" };
     if let Some(top_err) = chain.next() {
-        eprintln!(
+        lines.push(format!(
             "   {}  {}",
             style(icon_err()).bold().red(),
             style(top_err.to_string()).bold().red()
-        );
+        ));
     }
     for cause in chain {
-        eprintln!(
-            "      {} {}",
-            style(branch).dim(),
-            style(cause.to_string()).dim()
-        );
+        lines.push(format!("      {} {}", style(branch).dim(), style(cause.to_string()).dim()));
+    }
+    if is_tty() {
+        for line in lines {
+            let _ = multi().println(line);
+        }
+    } else {
+        for line in lines {
+            eprintln!("{line}");
+        }
     }
 }
 
 pub fn stage(name: &str, detail: impl std::fmt::Display) {
-    println!(
+    let detail = detail.to_string();
+    json_stdout(JsonEvent::Stage { stage: name.to_owned(), detail: detail.clone() });
+    if crate::policy::get().is_json() {
+        return;
+    }
+    let text = format!(
         "   {}  {:<11} {}",
         style(icon_arrow()).bold().cyan(),
         style(name).bold(),
         style(detail).white()
     );
+    if is_tty() {
+        let _ = multi().println(text);
+    } else {
+        println!("{text}");
+    }
 }
 
 pub fn key_value(key: &str, value: impl std::fmt::Display) {
+    let value = value.to_string();
+    json_stdout(JsonEvent::Field { key: key.to_owned(), value: value.clone() });
+    if crate::policy::get().is_json() {
+        return;
+    }
+    let text =
+        format!("      {} {}", style(format!("{key:<10}")).dim(), style(value).white().bold());
+    if is_tty() {
+        let _ = multi().println(text);
+    } else {
+        println!("{text}");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Banner
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub fn print_banner() {
+    let width = terminal_width();
+
+    if unicode_capable() && width >= 45 {
+        let logo = r#"
+    __  _______  _____  ____________
+   / / / /   \ \/ /   |/_  __/ ____/
+  / /_/ / /| |\  / /| | / / / __/
+ / __  / ___ |/ / ___ |/ / / /___
+/_/ /_/_/  |_/_/_/  |_/_/ /_____/
+"#;
+        println!("{}", style(logo).bold().cyan());
+    } else {
+        let logo = r#"
+  H A Y A T E
+  encrypted LAN transfer
+"#;
+        println!("{}", style(logo).bold().cyan());
+    }
+
+    let separator = if unicode_capable() { "━" } else { "=" };
+    let bar_w = width.saturating_sub(6).clamp(32, 72);
     println!(
-        "      {} {}",
-        style(format!("{key:<10}")).dim(),
-        style(value).white().bold()
+        "   {} {} {} {} {}",
+        style("Hayate").bold().green(),
+        style(box_v()).dim(),
+        style("encrypted LAN transfer").white(),
+        style(box_v()).dim(),
+        style(format!("v{VERSION}")).cyan().bold()
     );
+    println!("   {}", style(separator.repeat(bar_w)).dim());
+    println!();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -216,7 +425,11 @@ pub fn key_value(key: &str, value: impl std::fmt::Display) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub fn pairing_code(code: &str, command: &str) {
-    let inner_width = 50;
+    json_stdout(JsonEvent::PairingCode { code: code.to_owned(), command: command.to_owned() });
+    if crate::policy::get().is_json() {
+        return;
+    }
+    let inner_width = card_inner_width().min(56);
     let v = box_v();
     println!();
     println!(
@@ -275,11 +488,7 @@ pub fn pairing_code(code: &str, command: &str) {
 /// Returns padding + border. Caller applies the style to `border`.
 fn pad_right(content: &str, total_width: usize, border: impl std::fmt::Display) -> String {
     let content_len = console::measure_text_width(content);
-    let pad = if total_width > content_len {
-        total_width - content_len
-    } else {
-        1
-    };
+    let pad = if total_width > content_len { total_width - content_len } else { 1 };
     format!("{}{}", " ".repeat(pad), border)
 }
 
@@ -298,7 +507,14 @@ pub fn cipher_name(cipher_id: u8) -> &'static str {
 
 /// Displays a compact info card with key-value pairs inside a box.
 pub fn print_info_card(title: &str, rows: &[(&str, String)]) {
-    let inner_width = 54;
+    json_stdout(JsonEvent::TransferInfo {
+        title: title.to_owned(),
+        fields: rows.iter().map(|(k, v)| ((*k).to_owned(), v.clone())).collect(),
+    });
+    if crate::policy::get().is_json() {
+        return;
+    }
+    let inner_width = card_inner_width();
     let v = box_v();
     println!();
     // Top border
@@ -357,6 +573,17 @@ pub fn print_transfer_offer(
     cipher: &str,
     hash_algo: &str,
 ) {
+    json_stdout(JsonEvent::TransferOffer {
+        filename: filename.to_owned(),
+        size,
+        kind: kind.to_owned(),
+        from: peer.to_string(),
+        cipher: cipher.to_owned(),
+        hash: hash_algo.to_owned(),
+    });
+    if crate::policy::get().is_json() {
+        return;
+    }
     let rows = [
         ("filename", filename.to_owned()),
         ("type", kind.to_owned()),
@@ -365,6 +592,8 @@ pub fn print_transfer_offer(
         ("cipher", cipher.to_owned()),
         ("hash", hash_algo.to_owned()),
     ];
+    // Pretty path only: skip the JSON re-emit from `print_info_card` by
+    // temporarily relying on pretty mode (already checked).
     print_info_card("Incoming Transfer", &rows);
 }
 
@@ -374,22 +603,15 @@ pub fn print_transfer_offer(
 
 /// Returns progress characters that render on the current terminal.
 fn progress_chars() -> &'static str {
-    if unicode_capable() {
-        "━━╸ "
-    } else {
-        "==> "
-    }
+    if unicode_capable() { "━━╸ " } else { "==> " }
 }
 
 fn spinner_tick_chars() -> &'static str {
-    if unicode_capable() {
-        "⣾⣽⣻⢿⡿⣟⣯⣷⠿"
-    } else {
-        "/-\\|"
-    }
+    if unicode_capable() { "⣾⣽⣻⢿⡿⣟⣯⣷⠿" } else { "/-\\|" }
 }
 
-/// Creates a labelled transfer progress bar with premium styling.
+/// Creates a labelled transfer progress bar attached to the shared
+/// MultiProgress.
 pub fn transfer_progress_bar(label: &str, total_bytes: u64) -> ProgressBar {
     let template = if unicode_capable() {
         "   {prefix:.bold.cyan} {spinner} {wide_bar:.cyan/blue} {bytes:>10}/{total_bytes:10}  {bytes_per_sec:>11.green}  {eta:>6.dim}"
@@ -399,14 +621,9 @@ pub fn transfer_progress_bar(label: &str, total_bytes: u64) -> ProgressBar {
     let style = ProgressStyle::with_template(template)
         .expect("valid template")
         .progress_chars(progress_chars());
-    let pb = ProgressBar::new(total_bytes);
+    let pb = multi().add(ProgressBar::new(total_bytes));
     pb.set_style(style);
     pb.set_prefix(format!("{label:>8}"));
-    if is_tty() {
-        pb.set_draw_target(ProgressDrawTarget::stdout_with_hz(15));
-    } else {
-        pb.set_draw_target(ProgressDrawTarget::hidden());
-    }
     // Seed the initial draw so the bar is visible before the first chunk
     // lands, and speed/ETA are calculated from actual progress deltas rather
     // than being polluted by zero-progress steady-tick samples.
@@ -428,8 +645,8 @@ pub fn finish_transfer_progress(pb: &ProgressBar, total_bytes: u64) {
     pb.finish_and_clear();
 }
 
-/// Creates a spinner for indeterminate progress. Prefix and message are
-/// combined into a single field to avoid line-wrapping on narrow terminals.
+/// Creates a spinner for indeterminate progress attached to the shared
+/// MultiProgress.
 pub fn spinner(label: &str, detail: &str) -> ProgressBar {
     let template = if unicode_capable() {
         "   {spinner:.cyan.bold}  {prefix:.bold}"
@@ -439,25 +656,25 @@ pub fn spinner(label: &str, detail: &str) -> ProgressBar {
     let style = ProgressStyle::with_template(template)
         .expect("valid template")
         .tick_chars(spinner_tick_chars());
-    let pb = ProgressBar::new_spinner();
+    let pb = multi().add(ProgressBar::new_spinner());
     pb.set_style(style);
     pb.set_prefix(format!("{label}  {detail}"));
     if is_tty() {
-        pb.set_draw_target(ProgressDrawTarget::stdout_with_hz(10));
-        pb.enable_steady_tick(std::time::Duration::from_millis(100));
-    } else {
-        pb.set_draw_target(ProgressDrawTarget::hidden());
+        pb.enable_steady_tick(std::time::Duration::from_millis(120));
     }
     pb
 }
 
-/// Updates the detail portion of an existing spinner. Useful when the
-/// state changes (e.g., "waiting" → "receiver connected").
+/// Updates the detail portion of an existing spinner.
+/// Updates an existing spinner's message. Kept for call sites that keep a bar
+/// across multi-step waits without recreating it.
+#[allow(dead_code)]
 pub fn spinner_update(pb: &ProgressBar, label: &str, detail: &str) {
     pb.set_prefix(format!("{label}  {detail}"));
 }
 
-/// Creates a progress bar for network scanning with host count.
+/// Creates a progress bar for network scanning attached to the shared
+/// MultiProgress.
 pub fn scan_progress_bar(total_hosts: u64) -> ProgressBar {
     let template = if unicode_capable() {
         "   {spinner:.cyan.bold}  Scanning {wide_bar:.cyan/blue} {pos:>4}/{len:<4} hosts  {msg:.dim.white}"
@@ -468,15 +685,22 @@ pub fn scan_progress_bar(total_hosts: u64) -> ProgressBar {
         .expect("valid template")
         .progress_chars(progress_chars())
         .tick_chars(spinner_tick_chars());
-    let pb = ProgressBar::new(total_hosts);
+    let pb = multi().add(ProgressBar::new(total_hosts));
     pb.set_style(style);
     if is_tty() {
-        pb.set_draw_target(ProgressDrawTarget::stdout_with_hz(15));
-        pb.enable_steady_tick(std::time::Duration::from_millis(80));
-    } else {
-        pb.set_draw_target(ProgressDrawTarget::hidden());
+        pb.enable_steady_tick(std::time::Duration::from_millis(120));
     }
     pb
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Prompt suspend helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Run a closure while the shared MultiProgress is suspended (all bars hidden).
+/// Use this around interactive prompts so the prompt can draw normally.
+pub fn suspend_for_prompt<R>(f: impl FnOnce() -> R) -> R {
+    multi().suspend(f)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -491,7 +715,23 @@ pub fn peer_found_live(
     rtt: &str,
     quality: &str,
 ) {
-    println!(
+    let rtt = rtt.trim();
+    let rtt_ms =
+        rtt.strip_suffix("ms").and_then(|value| value.trim().parse::<f64>().ok()).or_else(|| {
+            rtt.strip_suffix("µs")
+                .and_then(|value| value.trim().parse::<f64>().ok())
+                .map(|value| value / 1000.0)
+        });
+    json_stdout(JsonEvent::Peer {
+        name: name.to_owned(),
+        address: addr.to_string(),
+        os: os.to_owned(),
+        rtt_ms,
+    });
+    if crate::policy::get().is_json() {
+        return;
+    }
+    let text = format!(
         "   {} {}  {} {}  {}",
         style(quality).green(),
         style(name).white().bold(),
@@ -499,15 +739,25 @@ pub fn peer_found_live(
         style(os).dim(),
         style(rtt).dim(),
     );
+    if is_tty() {
+        let _ = multi().println(text);
+    } else {
+        println!("{text}");
+    }
 }
 
 pub fn print_peer_table(peers: &[(String, std::net::SocketAddr, String)]) {
+    json_stdout(JsonEvent::DiscoverSummary { count: peers.len() });
     if peers.is_empty() {
         warn("No peers found on the network.");
         return;
     }
 
-    let inner_width = 62;
+    if crate::policy::get().is_json() {
+        return;
+    }
+
+    let inner_width = card_inner_width().max(52);
     let v = box_v();
     println!();
     ok(&format!("Discovered {} peer(s)", peers.len()));
@@ -584,6 +834,18 @@ pub fn print_transfer_summary(
     cipher: &str,
 ) {
     let speed_val = speed(bytes, elapsed_secs);
+    json_stdout(JsonEvent::TransferComplete {
+        filename: filename.to_owned(),
+        size: bytes,
+        elapsed_secs,
+        speed_bps: speed_val,
+        checksum: checksum.to_owned(),
+        cipher: cipher.to_owned(),
+        compressed,
+    });
+    if crate::policy::get().is_json() {
+        return;
+    }
     let speed_str = format!("{}/s", format_bytes(speed_val));
     let speed_styled = color_speed(speed_val, &speed_str);
 
@@ -593,18 +855,11 @@ pub fn print_transfer_summary(
         ("time", format!("{elapsed_secs:.2}s")),
         ("speed", speed_str.clone()),
         ("cipher", cipher.to_owned()),
-        (
-            "compress",
-            if compressed {
-                "zstd".to_owned()
-            } else {
-                "off".to_owned()
-            },
-        ),
+        ("compress", if compressed { "zstd".to_owned() } else { "off".to_owned() }),
         ("checksum", truncate_checksum(checksum)),
     ];
 
-    let inner_width = 54;
+    let inner_width = card_inner_width();
     let v = box_v();
     println!();
     // Top border
@@ -744,12 +999,17 @@ pub fn get_backend_name() -> &'static str {
 /// Use [`print_local_addresses`] afterwards to list reachable addresses.
 pub fn print_bound(addr: impl std::fmt::Display) {
     let backend = get_backend_name();
+    let addr = addr.to_string();
+    json_stdout(JsonEvent::Bound { address: addr.clone(), backend: backend.to_owned() });
+    if crate::policy::get().is_json() {
+        return;
+    }
     let dot = icon_dot();
     println!(
         "   {}  {} {} · {} {}",
         style(dot).bold().green(),
         style("Bound").bold().white(),
-        style(addr.to_string()).bold().yellow(),
+        style(addr).bold().yellow(),
         style("QUIC").bold().magenta(),
         style(format!("[{backend}]")).bold().cyan()
     );
@@ -757,11 +1017,10 @@ pub fn print_bound(addr: impl std::fmt::Display) {
 
 /// Prints the cancellation hint.
 pub fn print_cancel_hint() {
-    println!(
-        "      {}  {}",
-        style("ESC / q").bold().dim(),
-        style("to exit").dim()
-    );
+    if crate::policy::get().is_json() {
+        return;
+    }
+    println!("      {}  {}", style("ESC / q").bold().dim(), style("to exit").dim());
 }
 
 /// Prints a compact table of local addresses a peer can connect to, with
@@ -770,12 +1029,21 @@ pub fn print_local_addresses(addrs: &[(std::net::Ipv4Addr, String)]) {
     if addrs.is_empty() {
         return;
     }
+    json_stdout(JsonEvent::BoundAddresses {
+        addresses: addrs
+            .iter()
+            .map(
+                |(ip, name)| {
+                    if name.is_empty() { ip.to_string() } else { format!("{ip} ({name})") }
+                },
+            )
+            .collect(),
+    });
+    if crate::policy::get().is_json() {
+        return;
+    }
     // Find the widest IP:port so columns align.
-    let max_ip_width = addrs
-        .iter()
-        .map(|(ip, _)| ip.to_string().len())
-        .max()
-        .unwrap_or(15);
+    let max_ip_width = addrs.iter().map(|(ip, _)| ip.to_string().len()).max().unwrap_or(15);
     let max_name_width = addrs.iter().map(|(_, name)| name.len()).max().unwrap_or(8);
 
     let inner = max_ip_width + max_name_width + 7; // "  ● " + "  " + padding

@@ -1,61 +1,29 @@
-//! Build script for Hayate CLI.
+//! Build script for hayate-cli.
+//!
+//! Injects git-derived version metadata into the binary.
 
-use std::process::Command;
+#![allow(missing_docs)]
+
+use std::process::Command as StdCommand;
 
 fn main() {
-    let commit = Command::new("git")
+    println!("cargo:rerun-if-changed=src/cli.rs");
+    emit_build_metadata();
+}
+
+fn emit_build_metadata() {
+    let version = env!("CARGO_PKG_VERSION");
+
+    println!("cargo:rustc-env=GIT_VERSION={version}");
+    println!("cargo:rustc-env=GIT_COMMIT_HASH={}", git_short_hash());
+}
+
+fn git_short_hash() -> String {
+    StdCommand::new("git")
         .args(["rev-parse", "--short", "HEAD"])
         .output()
         .ok()
-        .and_then(|output| {
-            if output.status.success() {
-                String::from_utf8(output.stdout).ok()
-            } else {
-                None
-            }
-        })
-        .map_or_else(|| "unknown".to_string(), |s| s.trim().to_string());
-
-    println!("cargo:rustc-env=GIT_COMMIT_HASH={commit}");
-    println!("cargo:rerun-if-changed=.git/HEAD");
-
-    let version = Command::new("git")
-        .args(["describe", "--tags", "--always"])
-        .output()
-        .ok()
-        .and_then(|output| {
-            if output.status.success() {
-                String::from_utf8(output.stdout).ok()
-            } else {
-                None
-            }
-        })
-        .map_or_else(
-            || std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "unknown".to_string()),
-            |s| {
-                let mut val = s.trim().to_string();
-                if val.starts_with('v') {
-                    val.remove(0);
-                }
-                val
-            },
-        );
-
-    println!("cargo:rustc-env=GIT_VERSION={version}");
-
-    let ref_path = Command::new("git")
-        .args(["symbolic-ref", "HEAD"])
-        .output()
-        .ok()
-        .and_then(|output| {
-            if output.status.success() {
-                String::from_utf8(output.stdout).ok()
-            } else {
-                None
-            }
-        });
-
-    if let Some(ref_path) = ref_path {
-        println!("cargo:rerun-if-changed=.git/{}", ref_path.trim());
-    }
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        .unwrap_or_else(|| "unknown".into())
 }

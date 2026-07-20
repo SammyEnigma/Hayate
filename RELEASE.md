@@ -1,168 +1,133 @@
 # How to Release
 
-Hayate uses **release-plz** (crates.io publishing) + **cargo-dist** (binary builds). Everything is automated — you just merge a PR.
+Hayate releases are driven by [Tegami](https://tegami.fuma-nama.dev). Merging a Tegami version PR bumps the workspace version, publishes the `hayate` library to crates.io, creates a GitHub release (e.g. **Hayate v6.0.0 — Shinka (進化)** — codenames live in `scripts/tegami.mts`), and triggers a matrix workflow that builds and attaches binaries for Linux, macOS, Windows, and Android (Termux).
+
+Both crates share one version and bump in lockstep: `scripts/tegami.mts` declares a `hayate` group with `syncBump` + `syncGitTag`, so one git tag (`hayate@<version>`) and one GitHub release cover the whole workspace.
 
 ---
 
-## The pipeline
+## One-time setup: trusted publishing
 
-```
-You push commits to master
-         │
-         ▼
-release-plz CI runs `release-pr`
-  → Creates a PR with version bump + changelog
-  → PR title: "chore: release vX.Y.Z"
-         │
-You review the PR, edit the changelog, merge it
-         │
-         ▼
-release-plz CI runs `release`
-  → Publishes `hayate` to crates.io
-  → Pushes git tag `vX.Y.Z`
-         │
-         ▼
-Dist `release.yml` triggers on the tag
-  → Builds 8 platform binaries
-  → Creates installers (shell, powershell)
-  → Uploads everything to GitHub Release
-  → Generates SHA256 checksums + self-updater
-```
+Publishing is tokenless — no `CARGO_REGISTRY_TOKEN` or `NPM_TOKEN` secrets. Both registries authenticate via GitHub OIDC; configure this once:
 
-**Total time from merge → GitHub Release with all assets: ~15 minutes.**
+### crates.io
+
+1. Open the `hayate` crate on crates.io → **Settings → Trusted Publishing**.
+2. Add a GitHub Actions publisher: owner `ShiinaSaku`, repo `Hayate`, workflow filename `publish.yml`, no environment.
+3. The `Publish` workflow exchanges OIDC for a short-lived token via `rust-lang/crates-io-auth-action` — nothing else to do.
+
+### npm
+
+1. For **each** of the 9 packages (`@shiinasaku/hayate` plus the 8 platform packages), open npmjs.com → package **Settings → Publishing access → Trusted Publisher**.
+2. Add GitHub Actions: org/user `ShiinaSaku`, repository `Hayate`, workflow filename `release-binaries.yml`, no environment.
+3. The `npm` job installs Node 24 (which ships npm 11) and `npm publish --provenance` picks up OIDC automatically.
+
+If a trusted-publisher exchange fails, the error message names the package and the missing config — fix the dashboard entry and re-run the workflow.
 
 ---
 
 ## Step by step
 
-### 1. Write code, commit conventionally
+### 1. Write a changelog
 
-Use [conventional commits](https://www.conventionalcommits.org/) so release-plz can categorise the changelog:
+Create a pending changelog file under `.tegami/` as `YYYY-MM-DD-{hash}.md`. The frontmatter must reference the `hayate` package (the library is the only published crate; `hayate-cli` is `publish = false`).
+
+```md
+---
+packages:
+  "hayate": patch
+---
+
+### Fix discovery on networks with link-local addresses
+
+Pairing now works correctly when only link-local addresses are available.
+```
+
+See the [Tegami changelog format](https://tegami.fuma-nama.dev/changelog) for details.
+
+### 2. Open the Tegami version PR
+
+Tegami computes the new version from the changelogs and opens a PR. Review it, then merge.
+
+### 3. Publish and release
+
+Merging the version PR triggers the `Publish` workflow (`.github/workflows/publish.yml`). It:
+
+- Publishes the `hayate` crate to crates.io via trusted publishing (OIDC, no stored token).
+- Creates the GitHub release for `hayate@<version>` with the codename title from `scripts/tegami.mts`.
+
+### 4. Binary release
+
+The `release-binaries` workflow (`.github/workflows/release-binaries.yml`) runs on the release event and builds:
+
+| Target | Archive | Extras |
+| ------ | ------- | ------ |
+| `x86_64-unknown-linux-gnu` | `.tar.gz` | `.deb` |
+| `aarch64-unknown-linux-gnu` | `.tar.gz` | `.deb` |
+| `x86_64-apple-darwin` | `.tar.gz` | completions |
+| `aarch64-apple-darwin` | `.tar.gz` | completions |
+| `x86_64-pc-windows-msvc` | `.zip` | completions |
+| `aarch64-pc-windows-msvc` | `.zip` | completions |
+| `aarch64-linux-android` | `.tar.gz` | completions |
+| `x86_64-linux-android` | `.tar.gz` | completions |
+
+A final job aggregates all uploaded artifacts into `SHA256SUMS.txt` and re-uploads it.
+
+### 5. npm distribution
+
+The `npm` job in the same workflow bundles the TypeScript wrapper with tsdown (Node 24 in CI; tsdown needs ≥ 22.18, output still targets Node 18), downloads the release archives plus `SHA256SUMS.txt`, verifies every archive's SHA-256, rejects unsafe archive paths, repackages the native binary for each platform into a scoped npm package, and publishes with `--provenance` attestation via trusted publishing (OIDC, no stored token):
+
+- `@shiinasaku/hayate` — the main CLI wrapper that installs the correct native binary as an optional dependency.
+- `@shiinasaku/hayate-darwin-x64` / `...arm64`
+- `@shiinasaku/hayate-linux-x64` / `...arm64`
+- `@shiinasaku/hayate-win32-x64` / `...arm64`
+- `@shiinasaku/hayate-android-x64` / `...arm64`
+
+After the release is published, users can install the CLI with:
 
 ```bash
-git commit -m "feat: add something new"       # → Added section
-git commit -m "fix: resolve a bug"            # → Fixed section
-git commit -m "refactor: clean up internals"  # → Changed section
-git commit -m "docs: update README"           # → Other section
+npm install -g @shiinasaku/hayate
 ```
 
-Push to master.
 
-### 2. Wait for the release-plz PR
+---
 
-Within 30 seconds of pushing, the `Release` workflow creates a PR on a branch like `release-plz-2026-06-28-012345`.
+## Local release tooling
 
-The PR title looks like:
+Cross-platform binaries are built with `bun run build.ts`:
 
-> chore: release v5.2.0
+- `bun run build` — native host target
+- `bun run build:all` — every target this host can reach
+- `bun run build:deb` — Linux targets plus `.deb` packages
+- `bun run build:android` — include Android (Termux) targets
+- `bun run build:everything` — all of the above
 
-The PR body contains an auto-generated changelog from your commit messages.
+Linux cross-compiles use `cargo-zigbuild`. Android builds prefer `cargo-ndk`; otherwise they fall back to the NDK linker scripts in `.cargo/config.toml`.
 
-### 3. Review and edit the PR
-
-**The auto-generated changelog is bare.** Before merging, edit `CHANGELOG.md` in the PR to add detail:
-
-```markdown
-## [5.2.0] - 2026-06-28
-
-### Added
-
-- Streaming support for stdin/stdout transfers
-- `--quiet` flag to suppress all non-error output
-
-### Fixed
-
-- Memory leak in BufferPool when channel sender disconnects mid-transfer
-- Windows terminal detection failing on ConPTY hosts
-```
-
-The version bump in `Cargo.toml` and `Cargo.lock` is handled automatically.
-
-### 4. Merge the PR
-
-Click **Merge pull request** on the release-plz PR. That's it.
-
-After merge:
-
-- **~2 minutes**: `hayate` appears on crates.io at the new version
-- **~12 minutes**: GitHub Release appears with binaries for all 8 platforms
-- **~15 minutes**: install scripts (`install.sh`, `install.ps1`) are live on GitHub Pages
-
-### 5. Verify the release
-
-```bash
-# Check crates.io
-cargo search hayate
-
-# Check GitHub Release has assets
-open https://github.com/ShiinaSaku/Hayate/releases/latest
-
-# Test the install script
-curl -sSf https://shiinasaku.github.io/Hayate/install.sh | bash
-```
+Type-check the release scripts with `bun run typecheck`.
 
 ---
 
 ## What NOT to do
 
-| Don't                                   | Why                                                                                         |
-| --------------------------------------- | ------------------------------------------------------------------------------------------- |
-| Force-push tags                         | Breaks running dist workflows with "ref does not point to expected commit"                  |
-| Delete and re-create tags               | Same reason — let the pipeline finish                                                       |
-| Manually bump `Cargo.toml` version      | release-plz handles this. Manual bumps cause merge conflicts with the release PR            |
-| Edit the release-plz PR branch directly | Always edit via the PR on GitHub                                                            |
-| Merge two release PRs at once           | Only one release at a time. Merge, wait for completion, then push more commits for the next |
-
----
-
-## If something goes wrong
-
-### The dist workflow failed
-
-1. Check the failed run at `https://github.com/ShiinaSaku/Hayate/actions/workflows/release.yml`
-2. Fix the issue, commit, push
-3. Delete the tag: `git push origin --delete vX.Y.Z`
-4. **Wait for the failed workflow to finish** (or cancel it)
-5. Re-tag: `git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z`
-
-### The changelog came out wrong
-
-Edit `CHANGELOG.md`, commit, and push. The fix will appear in the next release. Don't edit the current release's changelog after merging.
-
-### Need to skip a version
-
-If release-plz creates a PR for a version you don't want to release yet, just close the PR. It won't re-create it until you push new commits.
+| Don't                          | Why                                                          |
+| ------------------------------ | ------------------------------------------------------------- |
+| Force-push or recreate a tag   | Tags should be append-only.                                   |
+| Publish `hayate-cli`           | It's `publish = false` on purpose; only the library ships.  |
+| Hand-edit `Cargo.lock` version | Run `cargo update -p hayate -p hayate-cli` after bumping.    |
+| Edit `.tegami/publish-lock.yaml` or package changelogs | Tegami owns these files.                                    |
+| Re-add registry token secrets  | Publishing is OIDC trusted publishing on both registries.    |
 
 ---
 
 ## Version numbers
 
-Both crates share a single workspace version:
-
-```
+```toml
 [workspace.package]
-version = "5.1.0"
+version = "6.0.0"
 ```
-
-`hayate` and `hayate-cli` use `version.workspace = true` — they always stay in lockstep. This is the standard pattern for monorepos with one published crate and one companion binary.
 
 | Crate              | Published?             | Version source              |
-| ------------------ | ---------------------- | --------------------------- |
-| `hayate` (lib)     | crates.io              | `workspace.package.version` |
-| `hayate-cli` (bin) | No (`publish = false`) | `workspace.package.version` |
-
----
-
-## Artifacts produced
-
-Every release creates these files on the GitHub Release page:
-
-| File                         | Description                          |
-| ---------------------------- | ------------------------------------ |
-| `hayate-cli-{target}.tar.xz` | Binary for each platform (8 targets) |
-| `hayate-cli-{target}.zip`    | Same, for Windows MSVC               |
-| `hayate-cli-{target}-update` | Self-updater binary                  |
-| `hayate-cli-installer.sh`    | Shell installer (macOS/Linux)        |
-| `hayate-cli-installer.ps1`   | PowerShell installer (Windows)       |
-| `source.tar.gz`              | Source tarball                       |
-| `sha256.sum`                 | All checksums                        |
+| ------------------ | ---------------------- | ---------------------------- |
+| `hayate` (lib)     | crates.io              | `workspace.package.version`  |
+| `hayate-cli` (bin) | No (`publish = false`) | `workspace.package.version`  |

@@ -1,8 +1,8 @@
 //! # Hayate Engine
 //!
-//! Hayate is a completion-based transfer engine for encrypted file and directory
-//! movement across local networks. It is the library behind the Hayate CLI, but
-//! it is designed to be embedded directly in Rust applications.
+//! Hayate is a completion-based transfer engine for encrypted file and
+//! directory movement across local networks. It is the library behind the
+//! Hayate CLI, but it is designed to be embedded directly in Rust applications.
 //!
 //! The engine combines:
 //!
@@ -10,10 +10,11 @@
 //! * Completion-based async I/O through `compio`.
 //! * Ephemeral X25519 key agreement.
 //! * HKDF-SHA256 key derivation.
-//! * Blake3, RapidHash, or SHA256 payload integrity.
+//! * Blake3 or SHA256 payload integrity.
 //! * ChaCha20-Poly1305 or AES-256-GCM frame encryption.
 //! * Optional zstd compression.
-//! * Safe tar streaming for directory payloads.
+//! * Safe tar streaming for directory payloads (symlinks rejected; hard links
+//!   supported by replay after the target file is extracted).
 //!
 //! Most applications should start with [`HayateSender`] and [`HayateReceiver`].
 //! Lower-level modules remain public for custom transports, protocol testing,
@@ -37,6 +38,7 @@
 //!
 //! let checksum = sender.send("photos", |bytes_sent| {
 //!     println!("sent {bytes_sent} bytes");
+//!     Ok(())
 //! }).await?;
 //!
 //! println!("checksum {checksum}");
@@ -62,6 +64,7 @@
 //!     },
 //!     |bytes_received| {
 //!         println!("received {bytes_received} bytes");
+//!         Ok(())
 //!     },
 //! ).await?;
 //!
@@ -105,11 +108,16 @@
 //!
 //! ## Module Guide
 //!
-//! * [`runner`] provides the builder-style high-level API.
-//! * [`transfer`] implements handshake, consent, payload send, and payload receive.
-//! * [`protocol`] defines wire constants, frame flags, and [`protocol::Metadata`].
+//! * [`runner`] provides the builder-style high-level API, including staged
+//!   transfers ([`TransferStage`], [`HayateSender::send_with`],
+//!   [`HayateReceiver::receive_with`], [`ListeningReceiver`]).
+//! * [`transfer`] implements handshake, consent, payload send, and payload
+//!   receive.
+//! * [`protocol`] defines wire constants, frame flags, and
+//!   [`protocol::Metadata`].
 //! * [`crypto`] contains key agreement, HKDF, AEAD sealing, and AEAD opening.
-//! * [`network`] binds QUIC endpoints and builds ephemeral TLS/transport config.
+//! * [`network`] binds QUIC endpoints and builds ephemeral TLS/transport
+//!   config.
 //! * [`discovery`] handles pairing-code broadcast and discovery.
 //! * [`tar`] packages directories and safely extracts directory payloads.
 //! * [`local_addr`] exposes local IPv4 helpers for UI and discovery.
@@ -117,10 +125,11 @@
 //!
 //! ## Protocol Shape
 //!
-//! A transfer establishes QUIC, opens a bidirectional stream, negotiates protocol
-//! version and cipher capability, performs X25519 key agreement, derives a
-//! 32-byte AEAD key, encrypts metadata (including chosen hash algorithm),
-//! sends receiver consent, and then streams length-prefixed encrypted payload frames. File transfers must finish with the
+//! A transfer establishes QUIC, opens a bidirectional stream, negotiates
+//! protocol version and cipher capability, performs X25519 key agreement,
+//! derives a 32-byte AEAD key, encrypts metadata (including chosen hash
+//! algorithm), sends receiver consent, and then streams length-prefixed
+//! encrypted payload frames. File transfers must finish with the
 //! exact announced byte count; directory transfers are tar streams with
 //! containment checks during extraction.
 //!
@@ -131,19 +140,22 @@
 //! * Metadata is encrypted and authenticated before use.
 //! * Unknown transfer types are rejected before receive routing.
 //! * Payload frames are length-capped and AEAD-authenticated before writes.
-//! * Directory extraction rejects absolute paths, `..`, symlinks, and hard links.
+//! * Directory extraction rejects absolute paths, `..`, and symlinks; hard
+//!   links are collected and replayed after their targets are extracted.
 //! * Each transfer uses a fresh random HKDF salt and a transcript-bound key
 //!   derivation. When a passphrase is used, it is mixed into the IKM; this
 //!   authenticates the session against an eavesdropper but is **not a PAKE** on
 //!   its own — offline brute-force resistance depends on the word-list entropy
 //!   (see the CLI word-list hardening in the matching Tier 2 change).
-//! * Receive task failures are returned as [`EngineError`] instead of panicking.
+//! * Receive task failures are returned as [`EngineError`] instead of
+//!   panicking.
 //!
 //! ## Runtime
 //!
-//! Public async APIs are intended to run inside a `compio` runtime, commonly via
-//! `#[compio::main]`. Low-level callers must respect `compio` buffer ownership:
-//! buffers are moved into I/O operations and returned through `compio::BufResult`.
+//! Public async APIs are intended to run inside a `compio` runtime, commonly
+//! via `#[compio::main]`. Low-level callers must respect `compio` buffer
+//! ownership: buffers are moved into I/O operations and returned through
+//! `compio::BufResult`.
 
 #![warn(clippy::all, clippy::pedantic, missing_docs)]
 #![allow(
@@ -168,11 +180,18 @@ pub mod runner;
 pub mod tar;
 pub mod transfer;
 
-pub use discovery::BroadcasterGuard;
-pub use discovery::DiscoveredPeer;
+pub use discovery::{BroadcasterGuard, DiscoveredPeer};
 pub use error::EngineError;
-pub use protocol::Metadata;
-pub use runner::{HayateReceiver, HayateSender};
+pub use protocol::{Metadata, TransferKind};
+pub use runner::{
+    HayateReceiver,
+    HayateSender,
+    ListeningReceiver,
+    ReceiveOutcome,
+    SendOutcome,
+    TransferStage,
+    is_benign_peer_close,
+};
 
 /// Encode bytes as a lowercase hex string. Replaces the external `hex` crate.
 #[inline]

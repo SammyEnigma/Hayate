@@ -1,10 +1,13 @@
 //! Hayate CLI application.
 
 mod cli;
+mod exit_code;
 mod output;
+mod policy;
 mod subcmd;
 mod words;
 
+use std::process::{ExitCode, Termination};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -13,23 +16,59 @@ use clap::{CommandFactory, Parser};
 use cli::Cli;
 use compio::runtime::spawn;
 
-fn main() -> Result<()> {
-    if std::env::var_os("NO_COLOR").is_none() {
-        console::set_colors_enabled(true);
+/// Scans raw args for an explicit `--color <mode>` / `--color=<mode>` override.
+///
+/// Applied before `Cli::try_parse()` so that `always`/`never` take effect even
+/// on the `--help` / parse-error exit path, which prints the banner before a
+/// full [`Cli`] value exists. `auto` (or no flag at all) is a no-op: `console`
+/// already auto-detects `NO_COLOR` / `CLICOLOR` / `CLICOLOR_FORCE` / tty /
+/// `TERM=dumb` correctly on its own — this only needs to handle the two cases
+/// where the user wants to override that detection.
+fn apply_color_override(args: &[String]) {
+    let value = args.iter().enumerate().find_map(|(i, arg)| {
+        arg.strip_prefix("--color=")
+            .map(str::to_owned)
+            .or_else(|| (arg == "--color").then(|| args.get(i + 1).cloned()).flatten())
+    });
+    match value.as_deref() {
+        Some("always") => {
+            console::set_colors_enabled(true);
+            console::set_colors_enabled_stderr(true);
+            console::set_true_colors_enabled(true);
+            console::set_true_colors_enabled_stderr(true);
+        },
+        Some("never") => {
+            console::set_colors_enabled(false);
+            console::set_colors_enabled_stderr(false);
+        },
+        _ => {
+            // "auto", unrecognized, or unset: leave console's own detection
+            // alone.
+        },
     }
+}
 
+fn main() -> impl Termination {
+    match run() {
+        Ok(exit_code) => exit_code,
+        Err(err) => {
+            output::print_error(&err);
+            ExitCode::from(exit_code::CliExitCode::from_anyhow(&err))
+        },
+    }
+}
+
+fn run() -> Result<ExitCode> {
     let args: Vec<String> = std::env::args().collect();
+    apply_color_override(&args);
+
     if args.iter().any(|arg| arg == "-V") {
         println!("v{}", env!("CARGO_PKG_VERSION"));
-        std::process::exit(0);
+        return Ok(ExitCode::SUCCESS);
     }
     if args.iter().any(|arg| arg == "--version") {
-        println!(
-            "v{} (commit: {})",
-            env!("CARGO_PKG_VERSION"),
-            env!("GIT_COMMIT_HASH")
-        );
-        std::process::exit(0);
+        println!("v{} (commit: {})", env!("CARGO_PKG_VERSION"), env!("GIT_COMMIT_HASH"));
+        return Ok(ExitCode::SUCCESS);
     }
 
     let cli = match Cli::try_parse() {
@@ -43,14 +82,16 @@ fn main() -> Result<()> {
                 output::print_banner();
             }
             err.exit();
-        }
+        },
     };
+
+    policy::init(&cli);
 
     if cli.command.is_none() {
         output::print_banner();
         Cli::command().print_help()?;
         println!();
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
 
     // Shared cancellation flag for graceful shutdown (Ctrl+C).
@@ -68,15 +109,15 @@ fn main() -> Result<()> {
             cancelled_clone.store(true, Ordering::SeqCst);
             // Small grace period for logs to flush, then force exit.
             compio::time::sleep(std::time::Duration::from_millis(1500)).await;
-            std::process::exit(130);
+            exit_code::CliExitCode::Interrupted.exit();
         })
         .detach();
 
         let res = subcmd::dispatch(cli, cancelled).await;
         if let Err(err) = res {
             output::print_error(&err);
-            std::process::exit(1);
+            return Ok(ExitCode::from(exit_code::CliExitCode::from_anyhow(&err)));
         }
-        Ok(())
+        Ok(ExitCode::SUCCESS)
     })
 }
