@@ -77,16 +77,9 @@ jobs:
       # version (0.16.0) via the official tarball.
       - name: Install zig
         if: matrix.zigbuild
-        run: |
-          ZIG_VER=0.16.0
-          case "$(uname -m)" in
-            x86_64) ZIG_ARCH=x86_64 ;;
-            aarch64) ZIG_ARCH=aarch64 ;;
-            *) echo "unsupported arch"; exit 1 ;;
-          esac
-          curl -fsSL "https://ziglang.org/download/${ZIG_VER}/zig-linux-${ZIG_ARCH}-${ZIG_VER}.tar.xz" \
-            | tar -xJ -C /tmp
-          echo "/tmp/zig-linux-${ZIG_ARCH}-${ZIG_VER}" >> "$GITHUB_PATH"
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
 
       - name: Install cargo-ndk
         if: matrix.android
