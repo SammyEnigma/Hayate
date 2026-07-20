@@ -429,6 +429,9 @@ function buildArgsFor(target: Target, builder: string): string[] {
       "ndk",
       "--target",
       target.triple,
+      // getifaddrs/freeifaddrs (used by if-addrs) require Android API 24+.
+      "--platform",
+      "24",
       "--",
       "build",
       "--release",

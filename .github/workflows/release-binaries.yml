@@ -112,6 +112,8 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
           ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+          # getifaddrs/freeifaddrs (via if-addrs) require Android API 24+.
+          CARGO_NDK_ANDROID_TARGET_API_LEVEL: "24"
         shell: bash
         run: |
           args=("--target" "${{ matrix.target }}" "--release-dir" "dist" "--skip-checksums")
