@@ -73,12 +73,12 @@ jobs:
         if: matrix.zigbuild
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu gcc-x86-64-linux-gnu
 
-      # cargo-zigbuild shells out to the `zig` binary; install a matching
-      # version via the official tarball.
+      # cargo-zigbuild shells out to the `zig` binary; install the matching
+      # version (0.16.0) via the official tarball.
       - name: Install zig
         if: matrix.zigbuild
         run: |
-          ZIG_VER=0.14.0
+          ZIG_VER=0.16.0
           case "$(uname -m)" in
             x86_64) ZIG_ARCH=x86_64 ;;
             aarch64) ZIG_ARCH=aarch64 ;;
