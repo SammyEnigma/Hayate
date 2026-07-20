@@ -67,6 +67,12 @@ jobs:
         if: matrix.zigbuild
         run: cargo install cargo-zigbuild --locked --version 0.23.0
 
+      # C cross-compiler for crates (e.g. ring) that build C code via cc-rs
+      # when targeting non-host Linux triples.
+      - name: Install cross C toolchain
+        if: matrix.zigbuild
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu gcc-x86-64-linux-gnu
+
       # cargo-zigbuild shells out to the `zig` binary; install a matching
       # version via the official tarball.
       - name: Install zig

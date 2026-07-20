@@ -514,20 +514,21 @@ async function captureToFile(cmd: string, args: string[], outPath: string): Prom
 }
 
 async function createArchive(archivePath: string, staging: string, target: Target): Promise<void> {
-  mkdirSync(dirname(archivePath), { recursive: true });
+  const absArchive = join(import.meta.dir, archivePath);
+  mkdirSync(dirname(absArchive), { recursive: true });
 
   if (target.archive === "tar.gz") {
     const tar = await tarEntries(staging);
     const gzipped = await gzipAsync(tar, { level: 9 });
-    await Bun.write(archivePath, gzipped);
+    await Bun.write(absArchive, gzipped);
   } else {
     // Prefer `zip` when available; otherwise use PowerShell on Windows.
     if (await hasCommand("zip")) {
-      await run("zip", ["-r", archivePath, "."], { cwd: staging });
+      await run("zip", ["-r", absArchive, "."], { cwd: staging });
     } else if (process.platform === "win32") {
       await run(
         "powershell",
-        ["Compress-Archive", "-Path", `${staging}\\*`, "-DestinationPath", archivePath, "-Force"],
+        ["Compress-Archive", "-Path", `${staging}\\*`, "-DestinationPath", absArchive, "-Force"],
         { cwd: staging },
       );
     } else {
