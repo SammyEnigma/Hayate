@@ -440,7 +440,7 @@ function buildArgsFor(target: Target, builder: string): string[] {
     ];
   }
   if (target.zigbuild && hasCargoZigbuildSync()) {
-    return ["zigbuild", "build", "--release", "--package", "hayate-cli", "--target", target.triple];
+    return ["zigbuild", "--release", "--package", "hayate-cli", "--target", target.triple];
   }
   return ["build", "--release", "--package", "hayate-cli", "--target", target.triple];
 }
