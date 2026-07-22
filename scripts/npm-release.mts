@@ -201,7 +201,7 @@ function resolveVersion(args: Args): string {
 async function run(
   cmd: string,
   args: string[],
-  options?: { cwd?: string; env?: Record<string, string | undefined> },
+  options?: { cwd?: string; env?: Record<string, string | undefined>; allowExit?: number[] },
 ): Promise<string> {
   const proc = Bun.spawn({
     cmd: [cmd, ...args],
@@ -215,7 +215,7 @@ async function run(
     new Response(proc.stderr).text(),
   ]);
   const exit = await proc.exited;
-  if (exit !== 0) {
+  if (!(options?.allowExit ?? [0]).includes(exit)) {
     throw new Error(`${cmd} ${args.join(" ")} exited ${exit}\n${stdout}\n${stderr}`.trim());
   }
   return stdout;
@@ -271,13 +271,32 @@ async function listArchiveEntries(archivePath: string, target: Target): Promise<
     .filter((line) => line.length > 0);
 }
 
+/** PowerShell's Compress-Archive writes zip entries with `\` path separators.
+ * Info-ZIP on Unix extracts those as literal filename characters (and exits 1
+ * with a warning), so re-map such names to real directory paths afterwards. */
+function normalizeBackslashPaths(dir: string): void {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name.includes("\\")) {
+      const src = join(dir, entry.name);
+      const dst = join(dir, ...entry.name.split("\\").filter((p) => p.length > 0));
+      mkdirSync(dirname(dst), { recursive: true });
+      renameSync(src, dst);
+    } else if (entry.isDirectory()) {
+      normalizeBackslashPaths(join(dir, entry.name));
+    }
+  }
+}
+
 async function extractArchive(archivePath: string, target: Target, outDir: string): Promise<void> {
   assertSafeArchiveEntries(await listArchiveEntries(archivePath, target), archivePath);
   mkdirSync(outDir, { recursive: true });
   if (target.archive === "tar.gz") {
     await run("tar", ["-xzf", archivePath, "-C", outDir]);
   } else {
-    await run("unzip", ["-q", archivePath, "-d", outDir]);
+    // Info-ZIP exit 1 = warning only (e.g. the backslash-separator notice);
+    // the files are still extracted. Exit >= 2 is a real error.
+    await run("unzip", ["-q", archivePath, "-d", outDir], { allowExit: [0, 1] });
+    normalizeBackslashPaths(outDir);
   }
 }
 

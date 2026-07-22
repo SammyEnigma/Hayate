@@ -525,9 +525,14 @@ async function createArchive(archivePath: string, staging: string, target: Targe
     const gzipped = await gzipAsync(tar, { level: 9 });
     await Bun.write(absArchive, gzipped);
   } else {
-    // Prefer `zip` when available; otherwise use PowerShell on Windows.
+    // Prefer `zip` when available. On Windows, fall back to bsdtar (ships in
+    // System32 since Windows 10) whose zip writer uses forward-slash entry
+    // names — PowerShell Compress-Archive writes backslash separators, which
+    // breaks Info-ZIP extraction on Unix (npm-release consumes these zips).
     if (await hasCommand("zip")) {
       await run("zip", ["-r", absArchive, "."], { cwd: staging });
+    } else if (process.platform === "win32" && (await hasCommand("tar"))) {
+      await run("tar", ["-acf", absArchive, "."], { cwd: staging });
     } else if (process.platform === "win32") {
       await run(
         "powershell",

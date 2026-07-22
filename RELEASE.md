@@ -24,6 +24,13 @@ Publishing is tokenless — no `CARGO_REGISTRY_TOKEN` or `NPM_TOKEN` secrets. Bo
 
 If a trusted-publisher exchange fails, the error message names the package and the missing config — fix the dashboard entry and re-run the workflow.
 
+### GitHub PAT (`RELEASE_PAT`)
+
+The `publish` workflow ends by triggering `release-binaries.yml` via `workflow_dispatch`, which returns 403 with the default `GITHUB_TOKEN` (GitHub blocks it from starting new runs). Add a personal access token as the `RELEASE_PAT` repo secret:
+
+- Classic PAT: the `repo` scope.
+- Fine-grained PAT: **Actions: write** + **Contents: read** on `ShiinaSaku/Hayate`.
+
 ---
 
 ## Step by step

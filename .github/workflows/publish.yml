@@ -51,9 +51,13 @@ jobs:
       # The `release: published` event does not reliably fire when the release
       # is created by this workflow via the default GITHUB_TOKEN, so trigger the
       # binary/npm build explicitly once Tegami has created the release.
+      # NOTE: workflow_dispatch returns 403 with the default GITHUB_TOKEN
+      # (GitHub blocks it from starting new runs), so this uses a PAT stored as
+      # the RELEASE_PAT secret — classic PAT needs the `repo` scope; a
+      # fine-grained PAT needs Actions: write + Contents: read on this repo.
       - name: Trigger Release Binaries
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
         run: |
           tag=$(gh release list --repo ${{ github.repository }} \
             --limit 1 --json tagName --jq '.[0].tagName')
