@@ -71,16 +71,25 @@ fails.
 | `tar.rs`        | Directory ⇄ tar streaming; extraction rejects abs paths/`..`/symlinks  |
 | `local_addr.rs` | Interface/subnet detection (`if-addrs`)                                |
 
-`hayate-cli/` has no protocol logic of its own — it's clap parsing → library builder calls →
-`indicatif`/`console` progress UI.
+`hayate-cli/` has minimal protocol logic of its own — mostly clap parsing → library builder
+calls → `indicatif`/`console` progress UI — plus two local-only stores: `peers.rs`
+(named peers JSON in the user config dir, backs `hayate peers` / `send --to`) and
+`history.rs` (transfer log as JSONL in the user data dir, backs `hayate history`).
+`subcmd/man.rs` renders the roff man page from the clap definitions (hidden `hayate man`;
+`build.ts` captures it into archives and `.deb` packages).
 
 ### Protocol/threading notes (read before touching `transfer.rs` or `crypto.rs`)
 
 - Handshake: QUIC connects with an ephemeral self-signed cert (trust-on-first-use) → app-level
   X25519 exchange → receiver picks cipher (AES-256-GCM if HW-accelerated, else
-  ChaCha20-Poly1305) → encrypted `Metadata` → accept/reject byte.
+  ChaCha20-Poly1305) → encrypted `Metadata` → accept/reject byte → 8-byte resume offset
+  (wire protocol **v7**; v6 peers fail the version check cleanly).
 - Payload: 4 MiB frames, 8-deep async read-ahead, AEAD-encrypted, zstd-compressed unless the
-  file extension is a known pre-compressed format.
+  file extension is a known pre-compressed format. Frames are independently compressed with
+  random per-frame nonces — that is what makes offset resume possible.
+- Resume: receiver-driven (`HayateReceiver::resume`). Offset aligned down to a frame boundary;
+  both sides hash the skipped prefix locally so checksums cover the full file. Directory
+  (tar-stream) transfers always start fresh.
 - AEAD/zstd work runs on dedicated `std::thread` workers connected via `flume` channels,
   deliberately kept off the compio event-loop threads — don't add blocking crypto/compression
   calls directly on the async path.

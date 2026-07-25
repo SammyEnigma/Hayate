@@ -92,6 +92,10 @@ enum JsonEvent {
         cipher: String,
         compressed: bool,
     },
+    IntegrityVerified {
+        algo: String,
+        checksum: String,
+    },
     Bound {
         address: String,
         backend: String,
@@ -110,7 +114,7 @@ fn json_stdout(event: JsonEvent) {
     if !crate::policy::get().is_json() {
         return;
     }
-    if let Ok(line) = serde_json::to_string(&event) {
+    if let Some(line) = serialize_event(&event) {
         use std::io::Write;
         let mut lock = std::io::stdout().lock();
         let _ = writeln!(lock, "{line}");
@@ -124,9 +128,17 @@ fn json_stderr(event: JsonEvent) {
     if !crate::policy::get().is_json() {
         return;
     }
-    if let Ok(line) = serde_json::to_string(&event) {
+    if let Some(line) = serialize_event(&event) {
         eprintln!("{line}");
     }
+}
+
+/// Serialises an event as a single-line JSON object carrying a stable
+/// `schema` tag (`hayate/1`) so machine consumers can version-lock parsing.
+fn serialize_event(event: &JsonEvent) -> Option<String> {
+    let mut value = serde_json::to_value(event).ok()?;
+    value.as_object_mut()?.insert("schema".to_owned(), "hayate/1".into());
+    serde_json::to_string(&value).ok()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -925,6 +937,19 @@ fn color_speed(bytes_per_sec: u64, display: &str) -> String {
     } else {
         format!("{}", style(display).red().bold())
     }
+}
+
+/// Reports a successful end-to-end payload integrity verification.
+pub fn integrity_verified(checksum: &str) {
+    let algo = checksum.split('$').next().unwrap_or("unknown");
+    json_stdout(JsonEvent::IntegrityVerified {
+        algo: algo.to_owned(),
+        checksum: checksum.to_owned(),
+    });
+    if crate::policy::get().is_json() {
+        return;
+    }
+    ok(&format!("Integrity verified ({algo}) — payload hash matches end to end"));
 }
 
 fn truncate_checksum(checksum: &str) -> String {

@@ -21,10 +21,11 @@ name = "hayate"
 path = "src/main.rs"
 
 [dependencies]
-hayate = { path = "../hayate", version = "6.0.0" }
+hayate = { path = "../hayate", version = "6.1.0" }
 anyhow = { workspace = true }
 clap = { workspace = true }
 clap_complete = "4"
+clap_mangen = "0.2"
 compio = { workspace = true }
 compio-quic = { workspace = true }
 console = { workspace = true }

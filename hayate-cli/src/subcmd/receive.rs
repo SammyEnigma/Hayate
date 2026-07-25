@@ -48,7 +48,7 @@ async fn run_pairing(code: String, args: ReceiveArgs, cancelled: Arc<AtomicBool>
     let cancelled_progress = Arc::clone(&cancelled);
     let transfer_start_stage = Arc::clone(&transfer_start);
 
-    let mut builder = HayateReceiver::new().code(code);
+    let mut builder = HayateReceiver::new().code(code).resume(args.resume);
     if auto_accept {
         builder = builder.auto_accept(true);
     }
@@ -109,6 +109,12 @@ async fn run_pairing(code: String, args: ReceiveArgs, cancelled: Arc<AtomicBool>
                                 Some(output::transfer_progress_bar("receive", total_size));
                         }
                     },
+                    TransferStage::Resuming { offset } => {
+                        output::stage(
+                            "resume",
+                            format!("continuing from {}", output::format_bytes(offset)),
+                        );
+                    },
                     TransferStage::Finishing
                     | TransferStage::WaitingForPeer
                     | TransferStage::Pairing { .. }
@@ -168,6 +174,8 @@ async fn run_pairing(code: String, args: ReceiveArgs, cancelled: Arc<AtomicBool>
                 false,
                 output::cipher_name(outcome.cipher_id),
             );
+            output::integrity_verified(&outcome.checksum);
+            record_receive_history(&outcome, elapsed);
             Ok(())
         },
         Err(EngineError::TransferRejected) => {
@@ -194,7 +202,7 @@ async fn run_pairing(code: String, args: ReceiveArgs, cancelled: Arc<AtomicBool>
 
 async fn run_listen(args: ReceiveArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
     let bind_addr = SocketAddr::new(args.bind, args.port);
-    let mut builder = HayateReceiver::new().bind(bind_addr);
+    let mut builder = HayateReceiver::new().bind(bind_addr).resume(args.resume);
     if args.auto_accept {
         builder = builder.auto_accept(true);
     }
@@ -292,6 +300,12 @@ async fn run_listen(args: ReceiveArgs, cancelled: Arc<AtomicBool>) -> Result<()>
                                         Some(output::transfer_progress_bar("receive", total_size));
                                 }
                             },
+                            TransferStage::Resuming { offset } => {
+                                output::stage(
+                                    "resume",
+                                    format!("continuing from {}", output::format_bytes(offset)),
+                                );
+                            },
                             TransferStage::Finishing
                             | TransferStage::Connecting { .. }
                             | TransferStage::Pairing { .. }
@@ -356,7 +370,13 @@ async fn run_listen(args: ReceiveArgs, cancelled: Arc<AtomicBool>) -> Result<()>
                     false,
                     output::cipher_name(outcome.cipher_id),
                 );
-                break;
+                output::integrity_verified(&outcome.checksum);
+                record_receive_history(&outcome, elapsed);
+                if args.once {
+                    break;
+                }
+                respawn_waiting(no_progress, &waiting);
+                continue;
             },
             Err(EngineError::TransferRejected) => {
                 clear_progress(&progress);
@@ -525,6 +545,28 @@ fn resolve_output(output_dir: &std::path::Path, meta: &Metadata) -> PathBuf {
         .file_name()
         .unwrap_or_else(|| std::ffi::OsStr::new("received_file"));
     output_dir.join(name)
+}
+
+/// Appends a completed receive to the local history log (best-effort).
+fn record_receive_history(outcome: &hayate::ReceiveOutcome, elapsed: f64) {
+    if let Err(e) = crate::history::record(crate::history::HistoryEntry {
+        ts: 0,
+        direction: "receive".to_owned(),
+        filename: outcome.meta.filename.clone(),
+        size: outcome.meta.total_size,
+        elapsed_secs: elapsed,
+        speed_bps: if elapsed > f64::EPSILON {
+            (outcome.meta.total_size as f64 / elapsed) as u64
+        } else {
+            outcome.meta.total_size
+        },
+        checksum: outcome.checksum.clone(),
+        cipher: output::cipher_name(outcome.cipher_id).to_owned(),
+        peer: outcome.peer.to_string(),
+        path: Some(outcome.path.display().to_string()),
+    }) {
+        output::warn(&format!("could not record history: {e}"));
+    }
 }
 
 // ── ESC / q listener ─────────────────────────────────────────────────────

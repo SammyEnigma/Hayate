@@ -70,10 +70,15 @@ impl HashAlgorithm {
     after_long_help = "\
 Examples:
   hayate receive --output ./downloads
+  hayate receive --once --resume
   hayate send ./photo.jpg 192.168.1.20:50001
   hayate send ./project --code alpha-bravo-charlie-delta
+  hayate send ./big.iso --to laptop --bandwidth-limit 50MiB
+  hayate send ./photo.jpg --pick
   hayate receive --code alpha-bravo-charlie-delta
   hayate discover --timeout 5
+  hayate peers add laptop 192.168.1.20:50001
+  hayate history
   hayate completions zsh --install
   hayate docs
   hayate docs --web
@@ -142,8 +147,32 @@ pub enum Command {
     /// Print the in-terminal guide, or open the website.
     #[command(long_about = "Print a styled handbook in the terminal (default), or open the\n\
                       online docs with --web. Optional topic: start, send, receive,\n\
-                      discover, completions, exit, env, security, web.")]
+                      discover, peers, history, completions, exit, env, security, web.")]
     Docs(DocsArgs),
+
+    /// Show recent transfer history.
+    #[command(
+        alias = "log",
+        long_about = "Print a table of past transfers (direction, peer, size, duration,\n\
+                      checksum) recorded in the local history log."
+    )]
+    History(HistoryArgs),
+
+    /// Manage named peers for `hayate send --to NAME`.
+    #[command(
+        alias = "peer",
+        long_about = "Save, list, and delete named receiver addresses. Send with\n\
+                      `hayate send <path> --to NAME` instead of typing ip:port."
+    )]
+    Peers(PeersArgs),
+
+    /// Print a man page (roff) for hayate to stdout.
+    #[command(
+        hide = true,
+        long_about = "Render the hayate manual page in roff format. Used by the release\n\
+                      pipeline to ship man pages in archives and .deb packages."
+    )]
+    Man,
 }
 
 #[derive(clap::Args, Debug)]
@@ -171,15 +200,31 @@ pub struct ReceiveArgs {
     /// Cryptographic code-phrase for pairing.
     #[arg(long)]
     pub code: Option<String>,
+
+    /// Resume interrupted single-file transfers from existing partial files.
+    #[arg(long)]
+    pub resume: bool,
+
+    /// Exit after the first completed transfer (useful for scripting).
+    #[arg(long)]
+    pub once: bool,
 }
 
 #[derive(clap::Args, Debug)]
 pub struct SendArgs {
-    /// Path to the file or directory to send.
-    pub path: PathBuf,
+    /// Path to the file or directory to send. Omit for an interactive picker.
+    pub path: Option<PathBuf>,
 
     /// Receiver address in the form `ip:port` or `hostname:port`.
     pub target: Option<String>,
+
+    /// Send to a saved peer by name (see `hayate peers`).
+    #[arg(long, value_name = "NAME", conflicts_with = "target")]
+    pub to: Option<String>,
+
+    /// Scan the LAN and pick a receiver interactively.
+    #[arg(long, conflicts_with_all = ["target", "to", "code"])]
+    pub pick: bool,
 
     /// Cryptographic code-phrase for pairing.
     #[arg(long)]
@@ -203,6 +248,10 @@ pub struct SendArgs {
     /// Hash algorithm for payload integrity.
     #[arg(long, value_enum, default_value_t = HashAlgorithm::Blake3)]
     pub hash: HashAlgorithm,
+
+    /// Cap send throughput (e.g. 10MiB, 500KiB, 2M). Default: unlimited.
+    #[arg(long, value_name = "RATE")]
+    pub bandwidth_limit: Option<String>,
 
     /// Suppress the progress bar.
     #[arg(long, alias = "no-tui")]
@@ -240,8 +289,44 @@ pub struct DocsArgs {
 
     /// Topic to show (default: full guide).
     ///
-    /// One of: all, start, send, receive, discover, completions, exit, env,
-    /// security, web.
+    /// One of: all, start, send, receive, discover, peers, history,
+    /// completions, exit, env, security, web.
     #[arg(value_name = "TOPIC")]
     pub topic: Option<String>,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct HistoryArgs {
+    /// Show at most N entries (most recent first). 0 = all.
+    #[arg(short = 'n', long, default_value_t = 20)]
+    pub limit: usize,
+
+    /// Delete the history log.
+    #[arg(long)]
+    pub clear: bool,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct PeersArgs {
+    #[command(subcommand)]
+    pub action: PeersAction,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PeersAction {
+    /// List saved peers.
+    List,
+    /// Save a peer address under a name.
+    Add {
+        /// Peer name (letters, digits, '-', '_').
+        name: String,
+        /// Receiver address in the form `ip:port` or `hostname:port`.
+        addr: String,
+    },
+    /// Delete a saved peer.
+    #[command(alias = "rm", alias = "delete")]
+    Remove {
+        /// Peer name to delete.
+        name: String,
+    },
 }

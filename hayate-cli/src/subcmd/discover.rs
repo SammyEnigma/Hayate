@@ -4,6 +4,9 @@
 //! high-concurrency QUIC probes with RTT measurement and real-time result
 //! streaming so peers appear as they are discovered rather than waiting for
 //! the full scan to complete.
+//!
+//! The scan core ([`scan_for_peers`]) is shared with `hayate send --pick`,
+//! which reuses it to build an interactive receiver picker.
 
 use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -21,6 +24,18 @@ use crate::output;
 const DEFAULT_PORT: u16 = 50001;
 const CONCURRENCY: usize = 128;
 
+/// A receiver found by a subnet scan.
+pub struct FoundPeer {
+    /// Display name ("Hayate Peer" / "Local Instance").
+    pub name: String,
+    /// Reachable address of the peer.
+    pub addr: SocketAddr,
+    /// Peer OS when known, else "unknown".
+    pub os: String,
+    /// QUIC handshake round-trip time in milliseconds.
+    pub rtt_ms: f64,
+}
+
 /// Result of probing a single host.
 struct ProbeOutcome {
     addr: SocketAddr,
@@ -31,20 +46,52 @@ struct ProbeOutcome {
 }
 
 pub async fn run(args: DiscoverArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
-    let subnets =
-        if let Some(cidr) = &args.cidr { parse_cidr(cidr)? } else { detect_all_subnets() };
+    let peers = scan_for_peers(args.timeout, args.cidr.as_deref(), cancelled, true, |peer| {
+        let rtt_str = format_rtt(peer.rtt_ms);
+        output::peer_found_live(
+            &peer.name,
+            &peer.addr,
+            &peer.os,
+            &rtt_str,
+            quality_indicator(peer.rtt_ms),
+        );
+    })
+    .await?;
+
+    // Convert to the table format for final display
+    let peers: Vec<(String, SocketAddr, String)> =
+        peers.into_iter().map(|p| (p.name, p.addr, p.os)).collect();
+
+    output::print_peer_table(&peers);
+
+    if !peers.is_empty() {
+        output::info("Tip: run `hayate receive` to start accepting transfers.");
+    }
+
+    Ok(())
+}
+
+/// Scans local subnets for Hayate receivers.
+///
+/// `on_found` fires (from the collector task) for each newly discovered peer,
+/// enabling live UIs. When `show_progress` is set a scan progress bar is drawn
+/// on the shared MultiProgress.
+pub async fn scan_for_peers(
+    timeout_secs: u64,
+    cidr: Option<&str>,
+    cancelled: Arc<AtomicBool>,
+    show_progress: bool,
+    on_found: impl Fn(&FoundPeer),
+) -> Result<Vec<FoundPeer>> {
+    let subnets = if let Some(cidr) = cidr { parse_cidr(cidr)? } else { detect_all_subnets() };
 
     if subnets.is_empty() {
         output::warn("No local subnets detected. Loopback only. Use --cidr to specify a subnet.");
     } else {
-        output::info(&format!(
-            "Scanning {} subnet(s) with {}s timeout",
-            subnets.len(),
-            args.timeout
-        ));
+        output::info(&format!("Scanning {} subnet(s) with {timeout_secs}s timeout", subnets.len()));
     }
 
-    let timeout = Duration::from_secs(args.timeout);
+    let timeout = Duration::from_secs(timeout_secs);
 
     let mut targets: Vec<SocketAddr> = subnets
         .iter()
@@ -76,7 +123,7 @@ pub async fn run(args: DiscoverArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
     }
 
     let total_targets = targets.len() as u64;
-    let pb = output::scan_progress_bar(total_targets);
+    let pb = show_progress.then(|| output::scan_progress_bar(total_targets));
     let found_count = AtomicU64::new(0);
     let seen = Mutex::new(HashSet::new());
     let (result_tx, result_rx) = flume::bounded::<ProbeOutcome>(64);
@@ -96,7 +143,9 @@ pub async fn run(args: DiscoverArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
                         return;
                     }
                     let outcome = probe_one_with_rtt(addr, timeout).await;
-                    pb_ref.inc(1);
+                    if let Some(pb) = pb_ref {
+                        pb.inc(1);
+                    }
                     if let Some(oc) = outcome {
                         let key = format!("{}-{}", oc.resolved_ip, oc.addr.port());
                         let mut is_new = false;
@@ -108,7 +157,9 @@ pub async fn run(args: DiscoverArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
                         }
                         if is_new {
                             let n = found_ref.fetch_add(1, Ordering::Relaxed) + 1;
-                            pb_ref.set_message(format!("{n} peer(s) found"));
+                            if let Some(pb) = pb_ref {
+                                pb.set_message(format!("{n} peer(s) found"));
+                            }
                             let _ = result_tx.send_async(oc).await;
                         }
                     }
@@ -121,38 +172,27 @@ pub async fn run(args: DiscoverArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
     })
     .detach();
 
-    // Real-time output: print peers as they are discovered.
+    // Real-time output: collect peers as they are discovered.
     let mut discovered = Vec::new();
     while let Ok(peer) = result_rx.recv_async().await {
         if cancelled.load(Ordering::SeqCst) {
             break;
         }
-        let rtt_str = format_rtt(peer.rtt_ms);
-        output::peer_found_live(
-            &peer.name,
-            &peer.addr,
-            &peer.os,
-            &rtt_str,
-            quality_indicator(peer.rtt_ms),
-        );
-        discovered.push(peer);
+        let found = FoundPeer {
+            name: peer.name,
+            addr: SocketAddr::new(peer.resolved_ip, peer.addr.port()),
+            os: peer.os,
+            rtt_ms: peer.rtt_ms,
+        };
+        on_found(&found);
+        discovered.push(found);
     }
 
-    pb.finish_and_clear();
-
-    // Convert to the table format for final display
-    let peers: Vec<(String, SocketAddr, String)> = discovered
-        .into_iter()
-        .map(|p| (p.name, SocketAddr::new(p.resolved_ip, p.addr.port()), p.os))
-        .collect();
-
-    output::print_peer_table(&peers);
-
-    if !peers.is_empty() {
-        output::info("Tip: run `hayate receive` to start accepting transfers.");
+    if let Some(pb) = pb {
+        pb.finish_and_clear();
     }
 
-    Ok(())
+    Ok(discovered)
 }
 
 // ---------------------------------------------------------------------------

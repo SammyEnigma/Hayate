@@ -2,7 +2,9 @@
 
 mod cli;
 mod exit_code;
+mod history;
 mod output;
+mod peers;
 mod policy;
 mod subcmd;
 mod words;

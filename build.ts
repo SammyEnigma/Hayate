@@ -481,14 +481,26 @@ async function generateExtras(binPath: string, extrasDir: string, verbose: boole
       log(`  could not generate ${shell} completions: ${err}`);
     }
   }
+
+  // Man page (roff rendered from the clap definitions by the hidden
+  // `hayate man` subcommand, so the manual never drifts from --help).
+  const manDir = join(extrasDir, "man");
+  mkdirSync(manDir, { recursive: true });
+  try {
+    await captureToFile(binPath, ["man"], join(manDir, "hayate.1"));
+  } catch (err) {
+    log(`  could not generate man page: ${err}`);
+  }
 }
 
 function copyExtras(extrasDir: string, staging: string): void {
-  const completionsSrc = join(extrasDir, "completions");
-  const completionsDst = join(staging, "completions");
-  if (existsSync(completionsSrc)) {
-    mkdirSync(completionsDst, { recursive: true });
-    copyDirSync(completionsSrc, completionsDst);
+  // Copy every extras subtree (completions/, man/, …) into the archive root.
+  for (const entry of readdirSync(extrasDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const src = join(extrasDir, entry.name);
+    const dst = join(staging, entry.name);
+    mkdirSync(dst, { recursive: true });
+    copyDirSync(src, dst);
   }
 }
 
@@ -532,7 +544,9 @@ async function createArchive(archivePath: string, staging: string, target: Targe
     if (await hasCommand("zip")) {
       await run("zip", ["-r", absArchive, "."], { cwd: staging });
     } else if (process.platform === "win32" && (await hasCommand("tar"))) {
-      await run("tar", ["-acf", absArchive, "."], { cwd: staging });
+      // --force-local: GNU tar (Git for Windows) treats "D:\..." as a remote
+      // file because of the drive-letter colon.
+      await run("tar", ["--force-local", "-acf", absArchive, "."], { cwd: staging });
     } else if (process.platform === "win32") {
       await run(
         "powershell",
@@ -600,6 +614,15 @@ async function buildDebPackage(
     const zsh = join(extrasDir, "completions", "_hayate");
     if (existsSync(zsh)) {
       await Bun.write(join(zshDir, "_hayate"), Bun.file(zsh));
+    }
+    const man = join(extrasDir, "man", "hayate.1");
+    if (existsSync(man)) {
+      const manDir = join(shareDir, "man", "man1");
+      mkdirSync(manDir, { recursive: true });
+      const gzipped = await gzipAsync(new Uint8Array(await Bun.file(man).arrayBuffer()), {
+        level: 9,
+      });
+      await Bun.write(join(manDir, "hayate.1.gz"), gzipped);
     }
   }
 

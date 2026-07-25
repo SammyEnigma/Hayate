@@ -13,6 +13,7 @@
 //! | Sender to receiver | 4 | Encrypted metadata length |
 //! | Sender to receiver | N | Metadata frame: nonce, ciphertext, authentication tag |
 //! | Receiver to sender | 1 | Consent byte: `0x01` accept, `0x00` reject |
+//! | Receiver to sender | 8 | Resume offset (accepted transfers only; `0` = fresh) |
 //! | Sender to receiver | 4 | Encrypted payload frame length |
 //! | Sender to receiver | N | Payload frame: nonce, encrypted flag/payload, authentication tag |
 //!
@@ -31,7 +32,11 @@
 //! uncompressed payloads, [`FRAME_ZSTD`] for zstd-compressed payloads.
 
 /// Current binary wire protocol version.
-pub(crate) const PROTOCOL_VERSION: u16 = 6;
+///
+/// v7 adds the 8-byte resume offset the receiver sends after an accept
+/// consent byte. Mixed v6/v7 peers fail the version check instead of
+/// deadlocking on the extra bytes.
+pub(crate) const PROTOCOL_VERSION: u16 = 7;
 
 /// Metadata transfer type for a single file.
 pub(crate) const TRANSFER_FILE: u8 = 0x00;

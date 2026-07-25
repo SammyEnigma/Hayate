@@ -313,6 +313,27 @@ where
     write_all_owned(stream, vec![u8::from(accept)]).await.map(|_| ())
 }
 
+/// Writes the receiver's resume offset after an accept consent byte.
+///
+/// `0` means a fresh transfer; any other value is a byte offset, aligned down
+/// to a [`CHUNK_SIZE`] boundary, from which the sender should continue a file
+/// payload. Directory streams always use `0`.
+pub async fn write_resume_offset<S>(stream: &mut S, offset: u64) -> Result<(), EngineError>
+where
+    S: compio::io::AsyncWrite + Unpin,
+{
+    write_all_owned(stream, offset.to_be_bytes().to_vec()).await.map(|_| ())
+}
+
+/// Reads the receiver's resume offset sent after an accept consent byte.
+pub async fn read_resume_offset<S>(stream: &mut S) -> Result<u64, EngineError>
+where
+    S: compio::io::AsyncRead + Unpin,
+{
+    let bytes = read_exact_n(stream, 8).await?;
+    Ok(u64::from_be_bytes(bytes.try_into().expect("8 bytes read")))
+}
+
 // ---------------------------------------------------------------------------
 // Send payload
 // ---------------------------------------------------------------------------
@@ -322,6 +343,13 @@ where
 /// Chunks of [`crate::protocol::CHUNK_SIZE`] are read from the source,
 /// compressed (if requested and the file extension suggests it is beneficial),
 /// encrypted with the negotiated AEAD cipher, and written to the stream.
+///
+/// When `rate_limit` is `Some(bytes_per_sec)`, the writer loop throttles
+/// sustained throughput to roughly that rate using a simple token bucket.
+///
+/// A [`PayloadSource::File`] starting at a non-zero `pos` is a resume: the
+/// skipped prefix is still fed through the payload hasher (locally, without
+/// hitting the network) so sender and receiver checksums cover the full file.
 ///
 /// # Errors
 ///
@@ -336,6 +364,7 @@ pub async fn send_payload<S>(
     compress: bool,
     filename: Option<&str>,
     hash_algo: &str,
+    rate_limit: Option<u64>,
     mut progress_cb: impl FnMut(u64) -> Result<(), EngineError> + Send + 'static,
 ) -> Result<String, EngineError>
 where
@@ -384,6 +413,33 @@ where
         match source {
             PayloadSource::File { file, pos } => {
                 let file = Rc::new(file);
+                // Resume: hash the already-received prefix locally so the
+                // reported checksum covers the entire file, matching the
+                // receiver, which hashes its existing prefix before appending.
+                if pos > 0 {
+                    let mut prefix_pos = 0u64;
+                    while prefix_pos < pos {
+                        let want = std::cmp::min(CHUNK_SIZE as u64, pos - prefix_pos) as usize;
+                        let buf = pool_clone.lease().await;
+                        let compio::BufResult(result, buf) = file.read_at(buf, prefix_pos).await;
+                        match result {
+                            Ok(n) => {
+                                if n == 0 {
+                                    pool_clone.release(buf);
+                                    break;
+                                }
+                                hasher.update(&buf[..std::cmp::min(n, want)]);
+                                pool_clone.release(buf);
+                                prefix_pos += n as u64;
+                            },
+                            Err(e) => {
+                                pool_clone.release(buf);
+                                let _ = chunk_tx.send_async(Err(e)).await;
+                                return;
+                            },
+                        }
+                    }
+                }
                 let read_future = |f: Rc<compio::fs::File>, buf: Vec<u8>, p: u64| async move {
                     let compio::BufResult(result, buf) = f.read_at(buf, p).await;
                     (result, buf, p)
@@ -585,15 +641,26 @@ where
     let mut next_index = 0;
     let mut total: u64 = 0;
 
+    // Token-bucket throttle: track wire bytes against wall-clock budget.
+    let mut throttle = rate_limit.map(|rate| (std::time::Instant::now(), 0u64, rate));
+
     while let Ok(res) = result_rx.recv_async().await {
         let (index, frame, plaintext_len) = res?;
         pending.insert(index, (frame, plaintext_len));
         while let Some((frame, p_len)) = pending.remove(&next_index) {
+            let wire_len = frame.len() as u64;
             let written_frame = write_all_owned(stream, frame).await?;
             enc_pool.release(written_frame);
             total += p_len as u64;
             progress_cb(total)?;
             next_index += 1;
+            if let Some((start, sent, rate)) = &mut throttle {
+                *sent += wire_len;
+                let budget = std::time::Duration::from_secs_f64(*sent as f64 / *rate as f64);
+                if let Some(delay) = budget.checked_sub(start.elapsed()) {
+                    compio::time::sleep(delay).await;
+                }
+            }
         }
     }
 
@@ -648,6 +715,12 @@ impl Drop for FileCleanupGuard<'_> {
 /// Handles decryption, decompression (zstd), size validation, and safe path
 /// extraction for directory transfers.
 ///
+/// For single-file transfers, a non-zero `resume_offset` (aligned to a
+/// [`CHUNK_SIZE`] boundary) appends to an existing partial file instead of
+/// truncating it: the on-disk prefix is hashed first so the returned checksum
+/// covers the whole file, and a failed transfer keeps the partial file for a
+/// later resume instead of deleting it.
+///
 /// # Errors
 ///
 /// Returns [`EngineError`] if reading from stream, decrypting, decompressing,
@@ -661,6 +734,7 @@ pub async fn receive_payload<S>(
     transfer_type: TransferKind,
     expected_size: u64,
     hash_algo: &str,
+    resume_offset: u64,
     mut progress_cb: impl FnMut(u64) -> Result<(), EngineError> + 'static,
 ) -> Result<String, EngineError>
 where
@@ -732,11 +806,25 @@ where
         None
     };
 
+    let resuming = transfer_type == TransferKind::File && resume_offset > 0;
     let mut cleanup_guard = None;
     let mut sink = if transfer_type == TransferKind::File {
-        let f = compio::fs::File::create(output_path).await.map_err(EngineError::Io)?;
-        cleanup_guard = Some(FileCleanupGuard::new(output_path));
-        PayloadSink::File { file: f, pos: 0 }
+        if resuming {
+            // Append to the existing partial file; never truncate, and keep
+            // the partial file on failure so a later attempt can resume.
+            let f = compio::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .truncate(false)
+                .open(output_path)
+                .await
+                .map_err(EngineError::Io)?;
+            PayloadSink::File { file: f, pos: resume_offset }
+        } else {
+            let f = compio::fs::File::create(output_path).await.map_err(EngineError::Io)?;
+            cleanup_guard = Some(FileCleanupGuard::new(output_path));
+            PayloadSink::File { file: f, pos: 0 }
+        }
     } else {
         PayloadSink::Channel(tx)
     };
@@ -852,6 +940,7 @@ where
     // Writer task: reorder, hash, and persist plaintext after validation.
     let algo = hash_algo.to_owned();
     let plain_pool_clone = plain_pool.clone();
+    let prefix_path = resuming.then(|| output_path.to_path_buf());
     let write_handle = compio::runtime::spawn(async move {
         let mut hasher =
             PayloadHasher::new(&algo).expect("hash algorithm is validated before payload transfer");
@@ -859,6 +948,30 @@ where
         let mut pos: u64 = 0;
         let mut next_index = 0;
         let mut pending = BTreeMap::new();
+
+        // Resume: hash the existing on-disk prefix so the final checksum
+        // covers the entire file, matching the sender's full-file hash.
+        if let Some(path) = prefix_path {
+            let prefix_file = compio::fs::File::open(&path).await.map_err(EngineError::Io)?;
+            let mut read_pos = 0u64;
+            while read_pos < resume_offset {
+                let want = std::cmp::min(CHUNK_SIZE as u64, resume_offset - read_pos) as usize;
+                let mut buf = plain_pool_clone.lease().await;
+                buf.truncate(want);
+                let compio::BufResult(result, buf) = prefix_file.read_at(buf, read_pos).await;
+                let n = result.map_err(EngineError::Io)?;
+                if n == 0 {
+                    plain_pool_clone.release(buf);
+                    break;
+                }
+                hasher.update(&buf[..n]);
+                plain_pool_clone.release(buf);
+                read_pos += n as u64;
+            }
+            total = resume_offset;
+            pos = resume_offset;
+            progress_cb(total)?;
+        }
 
         while let Ok(res) = plain_rx.recv_async().await {
             let (index, plaintext) = res?;
@@ -1043,9 +1156,21 @@ pub async fn send_payload_write(
     compress: bool,
     filename: Option<&str>,
     hash_algo: &str,
+    rate_limit: Option<u64>,
     progress_cb: impl FnMut(u64) -> Result<(), EngineError> + Send + 'static,
 ) -> Result<String, EngineError> {
-    send_payload(key, cipher_id, source, stream, compress, filename, hash_algo, progress_cb).await
+    send_payload(
+        key,
+        cipher_id,
+        source,
+        stream,
+        compress,
+        filename,
+        hash_algo,
+        rate_limit,
+        progress_cb,
+    )
+    .await
 }
 
 /// Receives the payload using a split `compio_quic::RecvStream`.
@@ -1062,6 +1187,7 @@ pub async fn receive_payload_split(
     transfer_type: TransferKind,
     expected_size: u64,
     hash_algo: &str,
+    resume_offset: u64,
     progress_cb: impl FnMut(u64) -> Result<(), EngineError> + 'static,
 ) -> Result<String, EngineError> {
     receive_payload(
@@ -1072,6 +1198,7 @@ pub async fn receive_payload_split(
         transfer_type,
         expected_size,
         hash_algo,
+        resume_offset,
         progress_cb,
     )
     .await

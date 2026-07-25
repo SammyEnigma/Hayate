@@ -85,6 +85,11 @@ pub enum TransferStage {
         /// Estimated total bytes (may be 0 for streaming directories).
         total_size: u64,
     },
+    /// Receiver: continuing an interrupted transfer from a byte offset.
+    Resuming {
+        /// Byte offset (frame-aligned) the payload resumes from.
+        offset: u64,
+    },
     /// Streams are being finished / drained.
     Finishing,
 }
@@ -158,6 +163,8 @@ pub struct HayateSender {
     passphrase: Option<String>,
     compress: bool,
     hash_algo: String,
+    /// Sustained throughput cap in bytes/sec; `None` = unlimited.
+    rate_limit: Option<u64>,
 }
 
 impl Default for HayateSender {
@@ -168,6 +175,7 @@ impl Default for HayateSender {
             passphrase: None,
             compress: true,
             hash_algo: "blake3".to_owned(),
+            rate_limit: None,
         }
     }
 }
@@ -223,6 +231,13 @@ impl HayateSender {
     #[must_use]
     pub fn hash_algo(mut self, algo: String) -> Self {
         self.hash_algo = algo;
+        self
+    }
+
+    /// Caps sustained send throughput at `bytes_per_sec` (default: unlimited).
+    #[must_use]
+    pub fn bandwidth_limit(mut self, bytes_per_sec: u64) -> Self {
+        self.rate_limit = (bytes_per_sec > 0).then_some(bytes_per_sec);
         self
     }
 
@@ -331,6 +346,15 @@ impl HayateSender {
 
         on_stage(TransferStage::Ready { meta: meta.clone(), cipher_id, peer, total_size })?;
 
+        // Resume offset chosen by the receiver (0 = fresh transfer). Only
+        // single-file payloads can resume; directory tar streams cannot.
+        let resume_offset = transfer::read_resume_offset(&mut recv_stream).await?;
+        let resume_offset = if meta.transfer_type == TransferKind::File && !path.is_dir() {
+            resume_offset.min(total_size)
+        } else {
+            0
+        };
+
         on_stage(TransferStage::Transferring { filename: meta.filename.clone(), total_size })?;
 
         let checksum = if path.is_dir() {
@@ -344,8 +368,16 @@ impl HayateSender {
             )
             .await?
         } else {
-            self.send_file(path, &key, cipher_id, &self.hash_algo, &mut send_stream, progress_cb)
-                .await?
+            self.send_file_at(
+                path,
+                resume_offset,
+                &key,
+                cipher_id,
+                &self.hash_algo,
+                &mut send_stream,
+                progress_cb,
+            )
+            .await?
         };
 
         on_stage(TransferStage::Finishing)?;
@@ -413,8 +445,32 @@ impl HayateSender {
         stream: &mut compio_quic::SendStream,
         progress_cb: impl FnMut(u64) -> Result<(), EngineError> + Send + 'static,
     ) -> Result<String, EngineError> {
+        self.send_file_at(path, 0, key, cipher_id, hash_algo, stream, progress_cb).await
+    }
+
+    /// Like [`Self::send_file`], but starts reading at `offset` (a resume).
+    ///
+    /// The skipped prefix is still hashed locally so the returned checksum
+    /// covers the entire file, and `progress_cb` reports positions relative
+    /// to the start of the file (i.e. offset + bytes sent).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] if file I/O, compression, encryption, or network
+    /// write fails.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn send_file_at(
+        &self,
+        path: &Path,
+        offset: u64,
+        key: &[u8; 32],
+        cipher_id: u8,
+        hash_algo: &str,
+        stream: &mut compio_quic::SendStream,
+        mut progress_cb: impl FnMut(u64) -> Result<(), EngineError> + Send + 'static,
+    ) -> Result<String, EngineError> {
         let file = compio::fs::File::open(path).await.map_err(EngineError::Io)?;
-        let source = transfer::PayloadSource::File { file, pos: 0 };
+        let source = transfer::PayloadSource::File { file, pos: offset };
         let filename = path.file_name().and_then(|s| s.to_str());
         transfer::send_payload_write(
             key,
@@ -424,7 +480,8 @@ impl HayateSender {
             self.compress,
             filename,
             hash_algo,
-            progress_cb,
+            self.rate_limit,
+            move |sent| progress_cb(offset + sent),
         )
         .await
     }
@@ -488,6 +545,7 @@ impl HayateSender {
             self.compress,
             None,
             hash_algo,
+            self.rate_limit,
             progress_cb,
         )
         .await
@@ -533,6 +591,8 @@ pub struct HayateReceiver {
     /// Optional KDF passphrase. When unset, falls back to `code`.
     passphrase: Option<String>,
     auto_accept: bool,
+    /// Resume interrupted single-file transfers from an existing partial file.
+    resume: bool,
 }
 
 impl Default for HayateReceiver {
@@ -542,6 +602,7 @@ impl Default for HayateReceiver {
             code: None,
             passphrase: None,
             auto_accept: false,
+            resume: false,
         }
     }
 }
@@ -587,6 +648,19 @@ impl HayateReceiver {
     #[must_use]
     pub fn auto_accept(mut self, auto_accept: bool) -> Self {
         self.auto_accept = auto_accept;
+        self
+    }
+
+    /// Enables resuming interrupted single-file transfers.
+    ///
+    /// When the destination file already exists with partial content, the
+    /// receiver tells the sender to continue from the last complete frame
+    /// boundary instead of restarting. A file that is already complete is
+    /// hash-verified without re-transferring any payload. Directory transfers
+    /// always start fresh.
+    #[must_use]
+    pub fn resume(mut self, resume: bool) -> Self {
+        self.resume = resume;
         self
     }
 
@@ -700,6 +774,7 @@ impl HayateReceiver {
             conn,
             self.kdf_passphrase(),
             self.auto_accept,
+            self.resume,
             output_dir,
             on_stage,
             consent_cb,
@@ -728,6 +803,7 @@ impl HayateReceiver {
             endpoint,
             passphrase: self.passphrase,
             auto_accept: self.auto_accept,
+            resume: self.resume,
         })
     }
 }
@@ -740,6 +816,7 @@ pub struct ListeningReceiver {
     endpoint: Endpoint,
     passphrase: Option<String>,
     auto_accept: bool,
+    resume: bool,
 }
 
 impl ListeningReceiver {
@@ -786,6 +863,7 @@ impl ListeningReceiver {
             conn,
             self.passphrase.as_deref(),
             self.auto_accept,
+            self.resume,
             output_dir.as_ref(),
             on_stage,
             consent_cb,
@@ -797,10 +875,12 @@ impl ListeningReceiver {
 }
 
 /// Runs handshake → consent → payload on an established receiver connection.
+#[allow(clippy::too_many_arguments)]
 async fn complete_receive_session(
     conn: compio_quic::Connection,
     passphrase: Option<&str>,
     auto_accept: bool,
+    resume: bool,
     output_dir: &Path,
     mut on_stage: impl FnMut(TransferStage) -> Result<(), EngineError>,
     consent_cb: impl FnOnce(&Metadata, SocketAddr) -> Option<PathBuf>,
@@ -826,6 +906,12 @@ async fn complete_receive_session(
         return Err(EngineError::TransferRejected);
     };
 
+    let resume_offset = compute_resume_offset(&dest, &meta, resume);
+    transfer::write_resume_offset(&mut send_stream, resume_offset).await?;
+    if resume_offset > 0 {
+        on_stage(TransferStage::Resuming { offset: resume_offset })?;
+    }
+
     on_stage(TransferStage::Transferring {
         filename: meta.filename.clone(),
         total_size: meta.total_size,
@@ -839,6 +925,7 @@ async fn complete_receive_session(
         meta.transfer_type,
         meta.total_size,
         &meta.hash_algo,
+        resume_offset,
         progress_cb,
     )
     .await?;
@@ -850,6 +937,31 @@ async fn complete_receive_session(
     conn.close(0u32.into(), b"complete");
 
     Ok(ReceiveOutcome { checksum, path: dest, meta, cipher_id, peer })
+}
+
+/// Chooses the resume offset for an accepted transfer.
+///
+/// Only single-file transfers can resume. The offset is aligned down to a
+/// frame boundary; an already-complete file yields `total_size`, which makes
+/// the sender stream nothing and turns the transfer into a hash verification.
+fn compute_resume_offset(dest: &Path, meta: &Metadata, resume: bool) -> u64 {
+    if !resume || meta.transfer_type != TransferKind::File {
+        return 0;
+    }
+    let Ok(stat) = std::fs::metadata(dest) else {
+        return 0;
+    };
+    if !stat.is_file() {
+        return 0;
+    }
+    let len = stat.len();
+    if len == 0 {
+        return 0;
+    }
+    if len >= meta.total_size {
+        return meta.total_size;
+    }
+    len - (len % crate::protocol::CHUNK_SIZE as u64)
 }
 
 /// Helper to resolve the output path for received files/directories.
@@ -931,6 +1043,7 @@ mod tests {
             TransferStage::Ready { .. } => "ready",
             TransferStage::Offer { .. } => "offer",
             TransferStage::Transferring { .. } => "transferring",
+            TransferStage::Resuming { .. } => "resuming",
             TransferStage::Finishing => "finishing",
         }
     }
@@ -1304,6 +1417,103 @@ mod tests {
                 Ok::<(), EngineError>(())
             })
             .expect("mismatch path should run");
+    }
+
+    #[test]
+    fn resume_continues_from_frame_boundary() {
+        let port = pick_free_port();
+        let src_dir = unique_test_dir("src-resume");
+        let dst_dir = unique_test_dir("dst-resume");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&dst_dir).unwrap();
+
+        // Payload just over one frame so the partial file lands exactly on a
+        // CHUNK_SIZE boundary (resume only continues from frame boundaries).
+        let full_len = crate::protocol::CHUNK_SIZE + 100_000;
+        let src_file = src_dir.join("resume.bin");
+        write_random_file(&src_file, full_len);
+        let expected_bytes = std::fs::read(&src_file).unwrap();
+
+        // Simulate an interrupted earlier transfer: the first frame is already
+        // sitting at the destination.
+        let partial = expected_bytes[..crate::protocol::CHUNK_SIZE].to_vec();
+        std::fs::write(dst_dir.join("resume.bin"), &partial).unwrap();
+
+        let receiver_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port));
+        let dst_dir_for_recv = dst_dir.clone();
+        let src_file_for_sender = src_file.clone();
+
+        let runtime = compio::runtime::Runtime::new().expect("runtime should build");
+        runtime
+            .block_on(async move {
+                let receiver =
+                    HayateReceiver::new().bind(receiver_addr).auto_accept(true).resume(true);
+                let recv_handle = compio::runtime::spawn(async move {
+                    receiver.receive(&dst_dir_for_recv, |_| true, |_| Ok(())).await
+                });
+
+                compio::time::sleep(Duration::from_millis(50)).await;
+
+                let sender_checksum = HayateSender::new()
+                    .target(receiver_addr)
+                    .send(&src_file_for_sender, |_| Ok(()))
+                    .await?;
+
+                let receiver_result = recv_handle
+                    .await
+                    .map_err(|e| EngineError::Io(std::io::Error::other(e.to_string())))?;
+                let (receiver_checksum, dest_path) = receiver_result?;
+                assert_eq!(sender_checksum, receiver_checksum);
+                assert_eq!(expected_bytes, std::fs::read(&dest_path).unwrap());
+                Ok::<(), EngineError>(())
+            })
+            .expect("resume transfer should succeed");
+    }
+
+    #[test]
+    fn resume_disabled_restarts_from_scratch() {
+        let port = pick_free_port();
+        let src_dir = unique_test_dir("src-noresume");
+        let dst_dir = unique_test_dir("dst-noresume");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&dst_dir).unwrap();
+
+        let src_file = src_dir.join("fresh.bin");
+        write_random_file(&src_file, 64 * 1024);
+        let expected_bytes = std::fs::read(&src_file).unwrap();
+
+        // A stale file with different content must be overwritten wholesale.
+        std::fs::write(dst_dir.join("fresh.bin"), b"stale garbage").unwrap();
+
+        let receiver_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port));
+        let dst_dir_for_recv = dst_dir.clone();
+        let src_file_for_sender = src_file.clone();
+
+        let runtime = compio::runtime::Runtime::new().expect("runtime should build");
+        runtime
+            .block_on(async move {
+                // resume(false): offset must stay 0 even with an existing file.
+                let receiver =
+                    HayateReceiver::new().bind(receiver_addr).auto_accept(true).resume(false);
+                let recv_handle = compio::runtime::spawn(async move {
+                    receiver.receive(&dst_dir_for_recv, |_| true, |_| Ok(())).await
+                });
+
+                compio::time::sleep(Duration::from_millis(50)).await;
+
+                let sender_checksum = HayateSender::new()
+                    .target(receiver_addr)
+                    .send(&src_file_for_sender, |_| Ok(()))
+                    .await?;
+
+                let (receiver_checksum, dest_path) = recv_handle
+                    .await
+                    .map_err(|e| EngineError::Io(std::io::Error::other(e.to_string())))??;
+                assert_eq!(sender_checksum, receiver_checksum);
+                assert_eq!(expected_bytes, std::fs::read(&dest_path).unwrap());
+                Ok::<(), EngineError>(())
+            })
+            .expect("fresh transfer should succeed");
     }
 
     #[test]

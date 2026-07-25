@@ -30,6 +30,8 @@ pub fn run(args: DocsArgs) -> Result<()> {
         "receive" | "recv" => section_receive(),
         "discover" | "scan" => section_discover(),
         "completions" | "complete" => section_completions(),
+        "peers" | "peer" => section_peers(),
+        "history" | "log" => section_history(),
         "exit" | "codes" | "status" => section_exit_codes(),
         "env" | "environment" => section_environment(),
         "security" => section_security(),
@@ -43,7 +45,7 @@ pub fn run(args: DocsArgs) -> Result<()> {
         other => {
             bail!(
                 "unknown docs topic `{other}`\n\
-                 try: all, start, send, receive, discover, completions, exit, env, security, web"
+                 try: all, start, send, receive, discover, peers, history, completions, exit, env, security, web"
             );
         },
     }
@@ -58,6 +60,8 @@ fn print_all() {
     section_send();
     section_receive();
     section_discover();
+    section_peers();
+    section_history();
     section_completions();
     section_exit_codes();
     section_environment();
@@ -90,38 +94,46 @@ fn section_quick_start() {
 }
 
 fn section_send() {
-    heading("hayate send <PATH> [TARGET]");
+    heading("hayate send [PATH] [TARGET]");
     body("Omit TARGET to print a pairing code and wait for a receiver.");
     body("Pass ip:port for a direct connection. Optional --code is a passphrase.");
-    kv("PATH", "file or directory to send");
+    kv("PATH", "file or directory to send (omit for an interactive prompt)");
     kv("TARGET", "receiver ip:port (optional)");
+    kv("--to NAME", "dial a saved peer (see hayate peers)");
+    kv("--pick", "scan the LAN and choose a receiver interactively");
     kv("--code", "pairing phrase / passphrase");
     kv("-z / --compress", "zstd on (default)");
     kv("--no-compress", "disable compression");
     kv("--hash", "blake3 | sha256");
+    kv("--bandwidth-limit", "cap throughput, e.g. 10MiB, 500KiB, 2M");
     kv("--no-progress", "hide progress bar");
     println!();
     sub("Examples");
     code("hayate send ./report.pdf");
     code("hayate send ./blob.bin 10.0.0.5:50001 --no-compress --format json");
+    code("hayate send ./movie.mkv --to laptop --bandwidth-limit 50MiB");
+    code("hayate send ./photo.jpg --pick");
     println!();
 }
 
 fn section_receive() {
     heading("hayate receive");
-    body("Listen for a direct transfer, or join a pairing session with --code.");
+    body("Listen for direct transfers, or join a pairing session with --code.");
     body("Prompts before accepting unless --auto-accept is set.");
     kv("-b / --bind", "bind address (HAYATE_BIND, default 0.0.0.0)");
     kv("-p / --port", "listen port (HAYATE_PORT, default 50001)");
     kv("-o / --output", "save directory (default .)");
     kv("--code", "join pairing session");
     kv("--auto-accept", "skip confirm prompt");
+    kv("--resume", "continue interrupted single-file transfers");
+    kv("--once", "exit after the first completed transfer");
     kv("--no-progress", "hide progress bar");
     println!();
     sub("Examples");
     code("hayate receive --output ./downloads");
     code("hayate receive --code \"forest-river-mango-silver-orbit\"");
     code("hayate receive --auto-accept --no-progress --format plain");
+    code("hayate receive --once --resume --output ./downloads");
     println!();
 }
 
@@ -132,6 +144,30 @@ fn section_discover() {
     kv("--cidr", "e.g. 192.168.1.0/24");
     println!();
     code("hayate discover --timeout 5");
+    println!();
+}
+
+fn section_peers() {
+    heading("hayate peers");
+    body("Save receiver addresses under short names, then send with --to NAME.");
+    body("Successful direct sends are auto-remembered by peer IP.");
+    kv("list", "show saved peers");
+    kv("add NAME ip:port", "save a peer");
+    kv("remove NAME", "delete a peer");
+    println!();
+    code("hayate peers add laptop 192.168.1.20:50001");
+    code("hayate send ./movie.mkv --to laptop");
+    println!();
+}
+
+fn section_history() {
+    heading("hayate history");
+    body("Every completed transfer is appended to a local JSONL log.");
+    kv("-n / --limit", "show at most N entries (default 20, 0 = all)");
+    kv("--clear", "delete the history log");
+    println!();
+    code("hayate history");
+    code("hayate history -n 5 --format json");
     println!();
 }
 

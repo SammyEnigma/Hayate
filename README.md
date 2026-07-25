@@ -50,6 +50,8 @@ encryption — no server, no configuration, no trusted third party.
 | **Performance**        | QUIC with 4 MiB frames, 8-deep asynchronous read-ahead, and compression + AEAD on dedicated worker threads.                                         |
 | **Encryption**         | Ephemeral X25519 key agreement, HKDF-SHA256, per-frame AEAD (AES-256-GCM or ChaCha20-Poly1305), all via [ring](https://github.com/briansmith/ring). |
 | **Zero configuration** | 4-word pairing phrases locate and authenticate peers over mDNS + UDP broadcast. Direct `ip:port` addressing works too.                              |
+| **Resumable**          | Interrupted single-file transfers continue from the last 4 MiB frame (`receive --resume`); already-complete files are hash-verified without resending. |
+| **Control**            | `--bandwidth-limit` throughput caps, named peers (`peers` + `send --to`), interactive receiver picking (`send --pick`), local transfer `history`.   |
 | **Portability**        | One self-contained binary for macOS, Linux, Windows, and Android (Termux) — x64 and arm64.                                                          |
 | **Scriptability**      | NDJSON event stream, stable documented exit codes, `--quiet` / `--verbose`, machine-readable `--format json`.                                       |
 
