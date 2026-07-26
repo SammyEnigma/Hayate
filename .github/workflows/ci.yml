@@ -74,7 +74,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: stable
-      - uses: obi1kenobi/cargo-semver-checks-action@3688bfd1a2883612e2c757134eb0422e6c12ee33 # v2.8
+      - uses: obi1kenobi/cargo-semver-checks-action@6b69fcf40e9b5fb17adeb57e4b6ecd020649a239 # v2.9
         with:
           package: hayate
 
