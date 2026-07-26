@@ -123,6 +123,7 @@ pub async fn scan_for_peers(
     }
 
     let total_targets = targets.len() as u64;
+    let show_progress = show_progress && !crate::policy::get().no_progress();
     let pb = show_progress.then(|| output::scan_progress_bar(total_targets));
     let found_count = AtomicU64::new(0);
     let seen = Mutex::new(HashSet::new());

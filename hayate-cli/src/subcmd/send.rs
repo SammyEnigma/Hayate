@@ -2,23 +2,18 @@
 
 use std::net::ToSocketAddrs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use anyhow::{Context, Result, bail};
 use hayate::protocol::TransferKind;
-use hayate::{EngineError, HayateSender, TransferStage};
-use indicatif::ProgressBar;
+use hayate::{HayateSender, TransferStage};
 
 use crate::cli::SendArgs;
+use crate::ui::{PathCompleter, TransferUi};
 use crate::{history, output, peers, policy};
 
 pub async fn run(args: SendArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
-    if cancelled.load(Ordering::SeqCst) {
-        bail!("cancelled");
-    }
-
     let path = match &args.path {
         Some(p) => p.clone(),
         None => prompt_path()?,
@@ -81,125 +76,101 @@ pub async fn run(args: SendArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
         builder = builder.code(phrase);
     }
 
-    let spinner: Arc<Mutex<Option<ProgressBar>>> = Arc::new(Mutex::new(None));
-    let progress: Arc<Mutex<Option<ProgressBar>>> = Arc::new(Mutex::new(None));
-    let no_progress = args.no_progress || policy::get().no_progress();
-    let transfer_start = Arc::new(Mutex::new(None));
-
-    let spinner_for_stages = Arc::clone(&spinner);
-    let progress_for_stages = Arc::clone(&progress);
-    let cancelled_transfer = Arc::clone(&cancelled);
-    let transfer_start_stage = Arc::clone(&transfer_start);
+    let ui = TransferUi::new(cancelled, args.no_progress);
 
     let result = builder
         .send_with(
             &path,
-            move |stage| {
-                if cancelled_transfer.load(Ordering::SeqCst) {
-                    return Err(EngineError::Cancelled("transfer cancelled by user".into()));
+            {
+                let ui = ui.clone();
+                move |stage| {
+                    ui.check_cancelled()?;
+                    match stage {
+                        TransferStage::Connecting { peer } => {
+                            output::stage("connect", format!("dialing {peer}"));
+                            ui.spinner("Connecting", &peer.to_string());
+                        },
+                        TransferStage::Pairing { code } => {
+                            if !print_instruction {
+                                output::stage("pairing", format!("waiting with code \"{code}\""));
+                            }
+                            ui.spinner("Pairing", "waiting for receiver…");
+                        },
+                        TransferStage::Connected { peer } => {
+                            ui.clear_spinner();
+                            output::ok(&format!("Connected to {peer}"));
+                        },
+                        TransferStage::Handshaking => {
+                            output::stage("handshake", "negotiating cipher…");
+                        },
+                        TransferStage::Ready { meta, cipher_id, peer, total_size } => {
+                            let kind = if meta.transfer_type == TransferKind::Directory {
+                                "directory"
+                            } else {
+                                "file"
+                            };
+                            let mut rows = vec![
+                                ("file", meta.filename.clone()),
+                                ("type", kind.to_owned()),
+                                ("size", output::format_bytes(total_size)),
+                                (
+                                    "compress",
+                                    if compress {
+                                        "zstd level 1".to_owned()
+                                    } else {
+                                        "off".to_owned()
+                                    },
+                                ),
+                                ("hash", hash_algo.clone()),
+                                ("cipher", output::cipher_name(cipher_id).to_owned()),
+                                ("peer", peer.to_string()),
+                            ];
+                            if let Some(rate) = rate_limit {
+                                rows.push(("limit", format!("{}/s", output::format_bytes(rate))));
+                            }
+                            output::print_info_card("Sending", &rows);
+                        },
+                        TransferStage::Resuming { offset } => {
+                            output::stage(
+                                "resume",
+                                format!("continuing from {}", output::format_bytes(offset)),
+                            );
+                            ui.set_resume_offset(offset);
+                        },
+                        TransferStage::Transferring { total_size, .. } => {
+                            ui.start_transfer("send", total_size);
+                        },
+                        TransferStage::Finishing
+                        | TransferStage::WaitingForPeer
+                        | TransferStage::Discovering { .. }
+                        | TransferStage::Offer { .. } => {},
+                        // `TransferStage` is non_exhaustive for future engine stages.
+                        _ => {},
+                    }
+                    Ok(())
                 }
-                match stage {
-                    TransferStage::Connecting { peer } => {
-                        output::stage("connect", format!("dialing {peer}"));
-                        if !no_progress {
-                            *spinner_for_stages.lock().unwrap() =
-                                Some(output::spinner("Connecting", &peer.to_string()));
-                        }
-                    },
-                    TransferStage::Pairing { code } => {
-                        if !print_instruction {
-                            output::stage("pairing", format!("waiting with code \"{code}\""));
-                        }
-                        if !no_progress {
-                            *spinner_for_stages.lock().unwrap() =
-                                Some(output::spinner("Pairing", "waiting for receiver…"));
-                        }
-                    },
-                    TransferStage::Connected { peer } => {
-                        clear_spinner(&spinner_for_stages);
-                        output::ok(&format!("Connected to {peer}"));
-                    },
-                    TransferStage::Handshaking => {
-                        output::stage("handshake", "negotiating cipher…");
-                    },
-                    TransferStage::Ready { meta, cipher_id, peer, total_size } => {
-                        let kind = if meta.transfer_type == TransferKind::Directory {
-                            "directory"
-                        } else {
-                            "file"
-                        };
-                        let mut rows = vec![
-                            ("file", meta.filename.clone()),
-                            ("type", kind.to_owned()),
-                            ("size", output::format_bytes(total_size)),
-                            (
-                                "compress",
-                                if compress { "zstd level 1".to_owned() } else { "off".to_owned() },
-                            ),
-                            ("hash", hash_algo.clone()),
-                            ("cipher", output::cipher_name(cipher_id).to_owned()),
-                            ("peer", peer.to_string()),
-                        ];
-                        if let Some(rate) = rate_limit {
-                            rows.push(("limit", format!("{}/s", output::format_bytes(rate))));
-                        }
-                        output::print_info_card("Sending", &rows);
-                        if !no_progress && total_size > 0 {
-                            *progress_for_stages.lock().unwrap() =
-                                Some(output::transfer_progress_bar("send", total_size));
-                        }
-                    },
-                    TransferStage::Resuming { offset } => {
-                        output::stage(
-                            "resume",
-                            format!("continuing from {}", output::format_bytes(offset)),
-                        );
-                    },
-                    TransferStage::Transferring { .. } => {
-                        *transfer_start_stage.lock().unwrap_or_else(|e| e.into_inner()) =
-                            Some(Instant::now());
-                    },
-                    TransferStage::Finishing
-                    | TransferStage::WaitingForPeer
-                    | TransferStage::Discovering { .. }
-                    | TransferStage::Offer { .. } => {},
-                    // `TransferStage` is non_exhaustive for future engine stages.
-                    _ => {},
-                }
-                Ok(())
             },
             {
-                let cancelled = Arc::clone(&cancelled);
-                let progress = Arc::clone(&progress);
+                let ui = ui.clone();
                 move |bytes| {
-                    if cancelled.load(Ordering::SeqCst) {
-                        return Err(EngineError::Cancelled("transfer cancelled by user".into()));
-                    }
-                    if let Some(pb) = progress.lock().unwrap().as_ref() {
-                        output::set_transfer_position(pb, bytes);
-                    }
+                    ui.check_cancelled()?;
+                    ui.set_position(bytes);
                     Ok(())
                 }
             },
         )
         .await;
 
-    clear_spinner(&spinner);
     let outcome = match result {
         Ok(outcome) => outcome,
         Err(error) => {
-            clear_progress(&progress);
+            ui.clear_all();
             return Err(error).context("send failed");
         },
     };
-    if let Some(pb) = progress.lock().unwrap().take() {
-        output::finish_transfer_progress(&pb, outcome.total_size);
-    }
+    ui.finish_progress(outcome.total_size);
 
-    let elapsed = transfer_start
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .map_or(0.0, |start| start.elapsed().as_secs_f64());
+    let elapsed = ui.elapsed();
     output::print_transfer_summary(
         &outcome.meta.filename,
         outcome.total_size,
@@ -216,24 +187,16 @@ pub async fn run(args: SendArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
     {
         output::warn(&format!("could not save peer: {e}"));
     }
-    if let Err(e) = history::record(history::HistoryEntry {
-        ts: 0,
-        direction: "send".to_owned(),
-        filename: outcome.meta.filename.clone(),
-        size: outcome.total_size,
-        elapsed_secs: elapsed,
-        speed_bps: if elapsed > f64::EPSILON {
-            (outcome.total_size as f64 / elapsed) as u64
-        } else {
-            outcome.total_size
-        },
-        checksum: outcome.checksum.clone(),
-        cipher: output::cipher_name(outcome.cipher_id).to_owned(),
-        peer: outcome.peer.to_string(),
-        path: None,
-    }) {
-        output::warn(&format!("could not record history: {e}"));
-    }
+    history::record_transfer(
+        "send",
+        &outcome.meta.filename,
+        outcome.total_size,
+        elapsed,
+        &outcome.checksum,
+        output::cipher_name(outcome.cipher_id),
+        &outcome.peer.to_string(),
+        None,
+    );
 
     Ok(())
 }
@@ -296,7 +259,9 @@ fn prompt_path() -> Result<PathBuf> {
         bail!("no path given and no TTY for the interactive picker");
     }
     let answer = output::suspend_for_prompt(|| {
-        inquire::Text::new("File or directory to send").with_autocomplete(FileCompleter).prompt()
+        inquire::Text::new("File or directory to send")
+            .with_autocomplete(PathCompleter::files_and_dirs())
+            .prompt()
     });
     match answer {
         Ok(text) => {
@@ -308,68 +273,6 @@ fn prompt_path() -> Result<PathBuf> {
         },
         Err(inquire::InquireError::OperationInterrupted) => bail!("cancelled"),
         Err(e) => Err(anyhow::anyhow!(e)),
-    }
-}
-
-/// Path autocompletion for the send picker — suggests files and directories.
-#[derive(Clone)]
-struct FileCompleter;
-
-impl inquire::Autocomplete for FileCompleter {
-    fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, inquire::CustomUserError> {
-        let path = std::path::Path::new(input);
-        let (dir_path, prefix) = if input.ends_with('/') || input.is_empty() {
-            (path, "")
-        } else {
-            (
-                path.parent().unwrap_or_else(|| std::path::Path::new("")),
-                path.file_name().and_then(|s| s.to_str()).unwrap_or(""),
-            )
-        };
-
-        let dir_to_read =
-            if dir_path.as_os_str().is_empty() { std::path::Path::new(".") } else { dir_path };
-
-        let mut suggestions = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(dir_to_read) {
-            for entry in entries.flatten() {
-                let name = entry.file_name();
-                let Some(name_str) = name.to_str() else {
-                    continue;
-                };
-                if !name_str.starts_with(prefix) {
-                    continue;
-                }
-                let full_path = dir_path.join(name_str);
-                let mut path_str = full_path.to_string_lossy().into_owned();
-                if entry.file_type().is_ok_and(|t| t.is_dir()) && !path_str.ends_with('/') {
-                    path_str.push('/');
-                }
-                suggestions.push(path_str);
-            }
-        }
-        suggestions.sort();
-        Ok(suggestions)
-    }
-
-    fn get_completion(
-        &mut self,
-        _input: &str,
-        highlighted_suggestion: Option<String>,
-    ) -> Result<inquire::autocompletion::Replacement, inquire::CustomUserError> {
-        Ok(highlighted_suggestion)
-    }
-}
-
-fn clear_spinner(spinner: &Arc<Mutex<Option<ProgressBar>>>) {
-    if let Some(s) = spinner.lock().unwrap_or_else(|e| e.into_inner()).take() {
-        s.finish_and_clear();
-    }
-}
-
-fn clear_progress(progress: &Arc<Mutex<Option<ProgressBar>>>) {
-    if let Some(pb) = progress.lock().unwrap_or_else(|e| e.into_inner()).take() {
-        pb.finish_and_clear();
     }
 }
 

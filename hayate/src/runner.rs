@@ -354,6 +354,9 @@ impl HayateSender {
         } else {
             0
         };
+        if resume_offset > 0 {
+            on_stage(TransferStage::Resuming { offset: resume_offset })?;
+        }
 
         on_stage(TransferStage::Transferring { filename: meta.filename.clone(), total_size })?;
 
@@ -890,7 +893,7 @@ async fn complete_receive_session(
     let (mut send_stream, mut recv_stream) = conn.accept_bi().await?;
 
     on_stage(TransferStage::Handshaking)?;
-    let ((key, cipher_id), meta) =
+    let ((key, cipher_id), meta, peer_version) =
         transfer::handshake_receiver_split(&mut send_stream, &mut recv_stream, passphrase).await?;
 
     on_stage(TransferStage::Offer { meta: meta.clone(), cipher_id, peer })?;
@@ -906,8 +909,13 @@ async fn complete_receive_session(
         return Err(EngineError::TransferRejected);
     };
 
-    let resume_offset = compute_resume_offset(&dest, &meta, resume);
-    transfer::write_resume_offset(&mut send_stream, resume_offset).await?;
+    // v6 senders predate the resume offset: never write it, or their payload
+    // reader would consume our offset bytes as frame data.
+    let resume_offset =
+        if peer_version >= 7 { compute_resume_offset(&dest, &meta, resume) } else { 0 };
+    if peer_version >= 7 {
+        transfer::write_resume_offset(&mut send_stream, resume_offset).await?;
+    }
     if resume_offset > 0 {
         on_stage(TransferStage::Resuming { offset: resume_offset })?;
     }
@@ -1514,6 +1522,91 @@ mod tests {
                 Ok::<(), EngineError>(())
             })
             .expect("fresh transfer should succeed");
+    }
+
+    #[test]
+    fn resume_sub_frame_partial_starts_fresh() {
+        let port = pick_free_port();
+        let src_dir = unique_test_dir("src-subframe");
+        let dst_dir = unique_test_dir("dst-subframe");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&dst_dir).unwrap();
+
+        let src_file = src_dir.join("tiny-resume.bin");
+        write_random_file(&src_file, 128 * 1024);
+        let expected_bytes = std::fs::read(&src_file).unwrap();
+
+        // Partial smaller than one frame: resume must restart from byte 0.
+        std::fs::write(dst_dir.join("tiny-resume.bin"), &expected_bytes[..1000]).unwrap();
+
+        let receiver_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port));
+        let dst_dir_for_recv = dst_dir.clone();
+        let src_file_for_sender = src_file.clone();
+
+        let runtime = compio::runtime::Runtime::new().expect("runtime should build");
+        runtime
+            .block_on(async move {
+                let receiver =
+                    HayateReceiver::new().bind(receiver_addr).auto_accept(true).resume(true);
+                let recv_handle = compio::runtime::spawn(async move {
+                    receiver.receive(&dst_dir_for_recv, |_| true, |_| Ok(())).await
+                });
+                compio::time::sleep(Duration::from_millis(50)).await;
+                let sender_checksum = HayateSender::new()
+                    .target(receiver_addr)
+                    .send(&src_file_for_sender, |_| Ok(()))
+                    .await?;
+                let (receiver_checksum, dest_path) = recv_handle
+                    .await
+                    .map_err(|e| EngineError::Io(std::io::Error::other(e.to_string())))??;
+                assert_eq!(sender_checksum, receiver_checksum);
+                assert_eq!(expected_bytes, std::fs::read(&dest_path).unwrap());
+                Ok::<(), EngineError>(())
+            })
+            .expect("sub-frame partial must restart cleanly");
+    }
+
+    #[test]
+    fn resume_complete_file_verifies_without_retransfer() {
+        let port = pick_free_port();
+        let src_dir = unique_test_dir("src-verify");
+        let dst_dir = unique_test_dir("dst-verify");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&dst_dir).unwrap();
+
+        let src_file = src_dir.join("done.bin");
+        write_random_file(&src_file, 96 * 1024 + 7);
+        let expected_bytes = std::fs::read(&src_file).unwrap();
+
+        // Destination already holds the complete, correct file.
+        std::fs::write(dst_dir.join("done.bin"), &expected_bytes).unwrap();
+
+        let receiver_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port));
+        let dst_dir_for_recv = dst_dir.clone();
+        let src_file_for_sender = src_file.clone();
+
+        let runtime = compio::runtime::Runtime::new().expect("runtime should build");
+        runtime
+            .block_on(async move {
+                let receiver =
+                    HayateReceiver::new().bind(receiver_addr).auto_accept(true).resume(true);
+                let recv_handle = compio::runtime::spawn(async move {
+                    receiver.receive(&dst_dir_for_recv, |_| true, |_| Ok(())).await
+                });
+                compio::time::sleep(Duration::from_millis(50)).await;
+                let sender_checksum = HayateSender::new()
+                    .target(receiver_addr)
+                    .send(&src_file_for_sender, |_| Ok(()))
+                    .await?;
+                let (receiver_checksum, dest_path) = recv_handle
+                    .await
+                    .map_err(|e| EngineError::Io(std::io::Error::other(e.to_string())))??;
+                // Verify-only resume: both sides hash the full content.
+                assert_eq!(sender_checksum, receiver_checksum);
+                assert_eq!(expected_bytes, std::fs::read(&dest_path).unwrap());
+                Ok::<(), EngineError>(())
+            })
+            .expect("verify-only resume should succeed");
     }
 
     #[test]

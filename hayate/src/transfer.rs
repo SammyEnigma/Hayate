@@ -28,6 +28,10 @@ use crate::protocol::{
 };
 use crate::{EngineError, crypto};
 
+/// Oldest wire protocol version a receiver will still accept. v6 lacks the
+/// resume offset; the receiver adapts by never writing one to a v6 peer.
+const MIN_SUPPORTED_VERSION: u16 = 6;
+
 // ---------------------------------------------------------------------------
 // Non-blocking Payload Sources and Sinks
 // ---------------------------------------------------------------------------
@@ -231,6 +235,12 @@ where
 /// This is particularly useful for protocols like QUIC that split connections
 /// into separate unidirectional streams.
 ///
+/// Returns the session key, cipher, metadata, and the peer's protocol version.
+/// A v6 sender is accepted (it never expects a resume offset); anything older
+/// or newer fails with [`EngineError::ProtocolMismatch`]. Note the asymmetry:
+/// a v7 *sender* still requires a v7 receiver, because the sender reads the
+/// resume offset the v6 receiver never sends.
+///
 /// # Errors
 ///
 /// Returns [`EngineError`] if version mismatch, key exchange derivation, cipher
@@ -239,7 +249,7 @@ pub async fn handshake_receiver_split<W, R>(
     send: &mut W,
     recv: &mut R,
     passphrase: Option<&str>,
-) -> Result<(([u8; 32], u8), Metadata), EngineError>
+) -> Result<(([u8; 32], u8), Metadata, u16), EngineError>
 where
     W: compio::io::AsyncWrite + Unpin,
     R: compio::io::AsyncRead + Unpin,
@@ -247,7 +257,7 @@ where
     // 1. Version check + Sender Capability
     let ver_cap = read_exact_n(recv, 3).await?;
     let remote_ver = u16::from_be_bytes([ver_cap[0], ver_cap[1]]);
-    if remote_ver != PROTOCOL_VERSION {
+    if !(MIN_SUPPORTED_VERSION..=PROTOCOL_VERSION).contains(&remote_ver) {
         return Err(EngineError::ProtocolMismatch { local: PROTOCOL_VERSION, remote: remote_ver });
     }
     let sender_cap = ver_cap[2];
@@ -302,7 +312,7 @@ where
         },
     };
     let meta = Metadata::decode(&plain)?;
-    Ok(((key, selected_cipher), meta))
+    Ok(((key, selected_cipher), meta, remote_ver))
 }
 
 /// Writes the consent byte (0x01 = accept, 0x00 = reject).
@@ -1220,6 +1230,67 @@ pub async fn send_consent_write(
 #[cfg(test)]
 mod tests {
     use super::{CHUNK_SIZE, PayloadHasher};
+
+    /// The receiver must reject ancient protocol versions immediately after
+    /// the 3-byte version/capability header — never hang waiting for more.
+    #[test]
+    fn receiver_rejects_ancient_version_fast() {
+        let runtime = compio::runtime::Runtime::new().expect("runtime should build");
+        runtime.block_on(async {
+            // Version 5, AES capability, then junk — the version check fires
+            // before any of the trailing bytes matter.
+            let wire: &[u8] = &[0x00, 0x05, crate::crypto::CIPHER_AES256_GCM, 0xAA, 0xBB];
+            let mut recv: &[u8] = wire;
+            let mut send: &mut [u8] = &mut [0u8; 64];
+            let started = std::time::Instant::now();
+            let result = super::handshake_receiver_split(&mut send, &mut recv, None).await;
+            assert!(
+                matches!(result, Err(crate::EngineError::ProtocolMismatch { local: 7, remote: 5 })),
+                "expected ProtocolMismatch, got {result:?}"
+            );
+            assert!(started.elapsed().as_secs() < 2, "version gate must not block");
+        });
+    }
+
+    /// A version newer than ours is likewise rejected — a future peer must
+    /// not silently drive a downgrade.
+    #[test]
+    fn receiver_rejects_future_version() {
+        let runtime = compio::runtime::Runtime::new().expect("runtime should build");
+        runtime.block_on(async {
+            let wire: &[u8] = &[0x00, 0x63, crate::crypto::CIPHER_CHACHA20];
+            let mut recv: &[u8] = wire;
+            let mut send: &mut [u8] = &mut [0u8; 64];
+            let result = super::handshake_receiver_split(&mut send, &mut recv, None).await;
+            assert!(
+                matches!(
+                    result,
+                    Err(crate::EngineError::ProtocolMismatch { local: 7, remote: 99 })
+                ),
+                "expected ProtocolMismatch, got {result:?}"
+            );
+        });
+    }
+
+    /// Resume-offset codec: big-endian u64, exactly 8 bytes.
+    #[test]
+    fn resume_offset_codec_golden() {
+        let runtime = compio::runtime::Runtime::new().expect("runtime should build");
+        runtime.block_on(async {
+            let mut buf = [0u8; 8];
+            {
+                let mut send: &mut [u8] = &mut buf;
+                super::write_resume_offset(&mut send, 4 * 1024 * 1024).await.unwrap();
+            }
+            // 4 MiB = 0x0040_0000, big-endian u64.
+            assert_eq!(buf, [0, 0, 0, 0, 0, 0x40, 0, 0]);
+
+            let mut recv: &[u8] = &buf;
+            let offset = super::read_resume_offset(&mut recv).await.unwrap();
+            assert_eq!(offset, 4 * 1024 * 1024);
+            assert!(recv.is_empty(), "reader must consume exactly 8 bytes");
+        });
+    }
 
     // ── PayloadHasher ─────────────────────────────────────────────────────────
     //

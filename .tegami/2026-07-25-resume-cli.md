@@ -36,3 +36,24 @@ packages:
   the build script now passes `--force-local`.
 - The publish workflow triggers release binaries via the GitHub REST API
   instead of the `gh` CLI.
+
+### Polish and hardening
+
+- **API stability**: the semver-guaranteed surface is now explicitly `runner`
+  + crate-root re-exports; `transfer`/`tar`/`pool` internals are
+  `#[doc(hidden)]` and unstable. CI runs `cargo-semver-checks`.
+- **Version tolerance**: v7 receivers gracefully accept v6 senders (resume is
+  simply disabled); truly ancient/future versions fail fast with
+  `ProtocolMismatch` instead of hanging.
+- **UI correctness**: all progress bars/spinners are owned by a single
+  `TransferUi` — no more leaked bars on error paths, and resumed transfers
+  seed the bar at the resume offset so speed/ETA math is honest. Bar creation
+  is gated uniformly by the output policy (JSON/plain/quiet never draw bars).
+  The ESC/q listener now backs off while interactive prompts own the terminal.
+- **Refactor**: send/receive share stage handling, consent/progress closures,
+  success reporting, and a single `PathCompleter`; history recording is one
+  `record_transfer` call instead of triplicated struct literals.
+- **Tests**: 84 total — golden wire-format fixtures, protocol version gate
+  (ancient + future), resume edge matrix (sub-frame partial, verify-only
+  complete file), and assert_cmd-driven CLI integration tests (peers, history,
+  docs, man, error paths) with isolated HOME.

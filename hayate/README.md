@@ -5,7 +5,7 @@
 <h1 align="center">Hayate Engine</h1>
 
 <p align="center">
-  <strong>Standalone high-performance completion-based transfer engine powering the Hayate CLI.</strong>
+  <strong>Encrypted, resumable LAN file transfer as a library — the engine powering the Hayate CLI.</strong>
 </p>
 
 <p align="center">
@@ -17,46 +17,28 @@
 
 ---
 
-`hayate` is the high-performance transfer engine powering the Hayate CLI. It provides high-level `HayateSender` and `HayateReceiver` builders for encrypted file and directory transfers over QUIC, plus low-level modules for apps needing custom protocol control.
+`hayate` is a completion-based transfer engine for moving files and directories across a local network — encrypted, compressed, and resumable. It gives you two builders, [`HayateSender`] and [`HayateReceiver`], and handles QUIC transport, X25519 key agreement, AEAD framing, zstd compression, integrity hashing, and safe tar streaming behind them.
 
-Driven by `compio` (an `io_uring`/IOCP runtime) and `compio-quic`, Hayate achieves blazing fast throughput utilizing a multi-threaded AEAD and Zstd pipeline, ephemeral X25519 key agreements, dynamic payload hashing (`blake3`, `rapidhash`, `sha256`), and safe `tar` streaming.
+Driven by [`compio`](https://github.com/compio-rs/compio) (io_uring / IOCP / kqueue) and `compio-quic`, with AEAD + zstd on dedicated worker threads so the async executor never blocks.
+
+## Highlights
+
+- **Resumable** — interrupted single-file transfers continue from the last 4 MiB frame; already-complete files are hash-verified without resending a byte.
+- **Throttleable** — `bandwidth_limit(bytes_per_sec)` caps sustained throughput for shared LANs.
+- **Encrypted end to end** — ephemeral X25519 + HKDF-SHA256 + per-frame AEAD (AES-256-GCM with hardware acceleration, ChaCha20-Poly1305 elsewhere).
+- **Integrity-checked** — every payload is hashed (`blake3` or `sha256`) on both sides; sizes are verified exactly.
+- **Staged API** — observe connect → handshake → offer → transfer → finish via `TransferStage` for rich UIs.
+- **Stable surface** — the semver guarantee covers `runner` and crate-root re-exports; `#[doc(hidden)]` internals are free to evolve.
 
 ## Installation
 
 ```toml
 [dependencies]
-hayate = "5.1.1"
+hayate = "6.1"
 compio = { version = "0.19", features = ["macros", "runtime", "fs", "net", "time"] }
 ```
 
-## Receive API
-
-```rust
-use std::net::SocketAddr;
-use hayate::HayateReceiver;
-
-#[compio::main]
-async fn main() -> Result<(), hayate::EngineError> {
-    let bind_addr: SocketAddr = "0.0.0.0:50001".parse().unwrap();
-
-    let receiver = HayateReceiver::new().bind(bind_addr);
-    let (checksum, path) = receiver.receive(
-        "./downloads",
-        |meta| {
-            println!("Incoming: {} ({} bytes)", meta.filename, meta.total_size);
-            true // Accept the transfer
-        },
-        |bytes| println!("Received {bytes} bytes"),
-    ).await?;
-
-    // Saved payload info
-    println!("Saved to {}", path.display());
-    println!("Checksum: {checksum}");
-    Ok(())
-}
-```
-
-## Send API
+## Send
 
 ```rust
 use std::net::SocketAddr;
@@ -70,17 +52,52 @@ async fn main() -> Result<(), hayate::EngineError> {
         .target(target)
         .compress(true)
         .hash_algo("blake3".to_string())
-        .send("photos", |bytes| println!("Sent {bytes} bytes"))
+        .bandwidth_limit(50 * 1024 * 1024) // optional: cap at 50 MiB/s
+        .send("photos", |bytes| {
+            println!("sent {bytes} bytes");
+            Ok(())
+        })
         .await?;
 
-    println!("Checksum: {checksum}");
+    println!("checksum {checksum}");
+    Ok(())
+}
+```
+
+## Receive (with resume)
+
+```rust
+use std::net::SocketAddr;
+use hayate::HayateReceiver;
+
+#[compio::main]
+async fn main() -> Result<(), hayate::EngineError> {
+    let bind_addr: SocketAddr = "0.0.0.0:50001".parse().unwrap();
+
+    let (checksum, path) = HayateReceiver::new()
+        .bind(bind_addr)
+        .resume(true) // continue interrupted transfers from partial files
+        .receive(
+            "./downloads",
+            |meta| {
+                println!("incoming {} ({} bytes)", meta.filename, meta.total_size);
+                true
+            },
+            |bytes| {
+                println!("received {bytes} bytes");
+                Ok(())
+            },
+        )
+        .await?;
+
+    println!("saved to {} — checksum {checksum}", path.display());
     Ok(())
 }
 ```
 
 ## Pairing Mode
 
-Discover peers across the LAN via UDP broadcasts. The code phrase doubles as the HKDF salt.
+Discover peers across the LAN via code-phrase broadcasts. The phrase is also mixed into key derivation, so strangers on the LAN cannot decrypt your metadata.
 
 ```rust
 use hayate::{HayateReceiver, HayateSender};
@@ -88,7 +105,7 @@ use hayate::{HayateReceiver, HayateSender};
 # async fn sender() -> Result<(), hayate::EngineError> {
 HayateSender::new()
     .code("alpha-bravo-charlie".to_owned())
-    .send("report.pdf", |_| {})
+    .send("report.pdf", |_| Ok(()))
     .await?;
 # Ok(())
 # }
@@ -97,40 +114,42 @@ HayateSender::new()
 let (_checksum, _path) = HayateReceiver::new()
     .code("alpha-bravo-charlie".to_owned())
     .auto_accept(true)
-    .receive("./downloads", |_| true, |_| {})
+    .receive("./downloads", |_| true, |_| Ok(()))
     .await?;
 # Ok(())
 # }
 ```
 
 > [!NOTE]
-> Android devices and VPNs often block broadcasts. Fallback to direct IP mode when necessary.
+> Android devices and VPNs often block broadcasts. Fall back to direct IP mode when necessary.
 
-## Module Architecture
+## API Stability
 
-| Module       | Purpose                                                                      |
-| ------------ | ---------------------------------------------------------------------------- |
-| `runner`     | Builder-style APIs: `HayateSender` and `HayateReceiver`.                     |
-| `transfer`   | Pipeline orchestration: handshake, consent, multithreaded receive/send pool. |
-| `protocol`   | Wire constants, frame flags, metadata structure, and limits.                 |
-| `crypto`     | Ephemeral X25519, HKDF, AEAD wrappers, and cipher selection.                 |
-| `network`    | QUIC bindings and ephemeral `rustls` configurations.                         |
-| `discovery`  | Pairing-code UDP broadcast and listener logic.                               |
-| `tar`        | Streaming directory packing and extraction.                                  |
-| `local_addr` | Network interface and subnet utilities.                                      |
-| `error`      | Defines `EngineError`.                                                       |
+| Surface | Semver-guaranteed? |
+| ------- | ------------------ |
+| `runner` (`HayateSender`, `HayateReceiver`, `ListeningReceiver`, `TransferStage`, outcomes) | ✅ stable |
+| Crate-root re-exports (`EngineError`, `Metadata`, `TransferKind`, …) | ✅ stable |
+| `crypto`, `network`, `discovery`, `local_addr`, `protocol` | ✅ stable |
+| `transfer`, `tar`, `pool` (`#[doc(hidden)]`) | ⚠️ unstable — may change in any minor release |
+
+CI runs `cargo-semver-checks` on every push, so accidental breaks in the stable surface fail the build before they reach crates.io.
 
 ## Runtime Notes
 
-`compio` uses completion-based I/O. Buffers must be owned and passed by value to I/O operations (returning via `compio::BufResult`).
+`compio` uses completion-based I/O: buffers are owned and passed by value to I/O operations, returning via `compio::BufResult`.
 
-Hayate isolates blocking logic (`tar` extraction) and heavy CPU tasks (`zstd` / AEAD) off the executor using dedicated worker threads (`std::thread::spawn`) and `flume` channels. A `BTreeMap` handles chunk reordering on the receiver to guarantee sequential disk writes.
+Hayate keeps blocking work off the executor: `tar` extraction and zstd/AEAD run on dedicated `std::thread` workers connected by `flume` channels. The receiver reorders frames in a `BTreeMap` to guarantee sequential disk writes.
 
 ## Safety Guarantees
 
 Hayate treats network data as fundamentally hostile:
 
-- **Encrypted Metadata**: Filename, size, and hashing choices are authenticated before prompting the user.
-- **Strict Framing**: Frames are length-capped and verified via AEAD before decompression.
-- **Size Verification**: Completed file sizes must match the exact announced byte count.
-- **Path Sanitization**: Directory unpacking rigorously prevents absolute paths, parent directory traversals (`..`), symlinks, and hard links.
+- **Encrypted metadata**: filename, size, and hash choice are authenticated before any consent prompt.
+- **Strict framing**: frames are length-capped and AEAD-verified before decompression.
+- **Size verification**: completed files must match the announced byte count exactly.
+- **Path sanitization**: directory extraction rejects absolute paths, `..` traversal, and symlinks; hard links are replayed only after their in-archive target exists.
+- **Version tolerance**: receivers accept older (v6) peers gracefully; truly incompatible versions fail fast with a clear `ProtocolMismatch` error.
+
+## License
+
+MIT — see [LICENSE](../LICENSE).

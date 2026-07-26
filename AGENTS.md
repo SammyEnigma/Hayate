@@ -20,6 +20,9 @@ before a release (see Release below).
   only `SocketAddr`/`String`/`Path`/`EngineError`. Callers still must execute inside a compio
   runtime (`#[compio::main]` or manual `Runtime::block_on`), since the futures await compio I/O
   internally.
+- Semver-guaranteed API = `runner` + crate-root re-exports + `crypto`/`network`/`discovery`/
+  `local_addr`/`protocol`. `transfer`, `tar`, `pool` are `pub` but `#[doc(hidden)]` — unstable,
+  change freely; CI's `semver` job (cargo-semver-checks) guards the stable surface.
 - Tests are plain `#[test]` (sync), even where the code under test is async — this repo has no
   `#[compio::test]` usage. Tests live inline in `#[cfg(test)] mod tests` blocks; there are no
   `tests/` directories.

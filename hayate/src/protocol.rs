@@ -266,4 +266,37 @@ mod tests {
             assert!(meta.validate().is_ok(), "expected {algo} to validate");
         }
     }
+
+    /// Golden wire-format test: the exact byte layout of an encoded
+    /// [`Metadata`] is pinned so accidental protocol drift fails loudly.
+    /// Any intentional change must update this fixture deliberately.
+    #[test]
+    fn metadata_encode_matches_golden_bytes() {
+        let meta =
+            Metadata::new("file.bin".to_owned(), 258, TransferKind::File, "blake3".to_owned());
+        let expected: &[u8] = &[
+            0x00, 0x08, // filename length = 8
+            b'f', b'i', b'l', b'e', b'.', b'b', b'i', b'n', // filename
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02, // total_size = 258
+            0x00, // TransferKind::File
+            0x06, // hash algo length = 6
+            b'b', b'l', b'a', b'k', b'e', b'3', // hash algo
+        ];
+        let encoded = meta.encode();
+        assert_eq!(encoded, expected, "metadata wire format drifted");
+        let decoded = Metadata::decode(&encoded).unwrap();
+        assert_eq!(decoded.filename, "file.bin");
+        assert_eq!(decoded.total_size, 258);
+        assert_eq!(decoded.transfer_type, TransferKind::File);
+        assert_eq!(decoded.hash_algo, "blake3");
+    }
+
+    #[test]
+    fn metadata_encode_directory_kind_golden() {
+        let meta = Metadata::new("dir".to_owned(), 0, TransferKind::Directory, "sha256".to_owned());
+        let encoded = meta.encode();
+        // Byte 2 + 3 (name) + 8 (size) = index 13 is the transfer kind.
+        assert_eq!(encoded[2 + 3 + 8], 0x01, "directory kind must encode as 0x01");
+        assert_eq!(encoded[2 + 3 + 8 + 1], 0x06, "sha256 length byte");
+    }
 }

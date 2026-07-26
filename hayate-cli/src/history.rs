@@ -60,6 +60,38 @@ pub fn record(mut entry: HistoryEntry) -> Result<()> {
     Ok(())
 }
 
+/// Builds and records a history entry for a completed transfer (best-effort;
+/// failures surface as a warning, never as a transfer error).
+#[allow(clippy::too_many_arguments)]
+pub fn record_transfer(
+    direction: &str,
+    filename: &str,
+    size: u64,
+    elapsed_secs: f64,
+    checksum: &str,
+    cipher: &str,
+    peer: &str,
+    path: Option<String>,
+) {
+    let speed_bps =
+        if elapsed_secs > f64::EPSILON { (size as f64 / elapsed_secs) as u64 } else { size };
+    let result = record(HistoryEntry {
+        ts: 0,
+        direction: direction.to_owned(),
+        filename: filename.to_owned(),
+        size,
+        elapsed_secs,
+        speed_bps,
+        checksum: checksum.to_owned(),
+        cipher: cipher.to_owned(),
+        peer: peer.to_owned(),
+        path,
+    });
+    if let Err(e) = result {
+        crate::output::warn(&format!("could not record history: {e}"));
+    }
+}
+
 /// Reads all entries, oldest first. Unparseable lines are skipped.
 fn read_all() -> Result<Vec<HistoryEntry>> {
     let path = log_path()?;

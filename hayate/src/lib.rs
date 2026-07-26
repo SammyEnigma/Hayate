@@ -17,9 +17,11 @@
 //!   supported by replay after the target file is extracted).
 //!
 //! Most applications should start with [`HayateSender`] and [`HayateReceiver`].
-//! Lower-level modules remain public for custom transports, protocol testing,
-//! or UI integrations that need direct control over handshakes and payload
-//! streams.
+//! The stable public API is the [`runner`] module plus the supporting types in
+//! [`protocol`], [`crypto`], [`network`], [`discovery`], and [`local_addr`].
+//! Transfer pipeline internals (handshake framing, payload send/receive, tar
+//! packaging, buffer pooling) are crate-private so they can evolve without
+//! semver-breaking downstream users.
 //!
 //! ## Direct Transfer
 //!
@@ -111,15 +113,12 @@
 //! * [`runner`] provides the builder-style high-level API, including staged
 //!   transfers ([`TransferStage`], [`HayateSender::send_with`],
 //!   [`HayateReceiver::receive_with`], [`ListeningReceiver`]).
-//! * [`transfer`] implements handshake, consent, payload send, and payload
-//!   receive.
-//! * [`protocol`] defines wire constants, frame flags, and
-//!   [`protocol::Metadata`].
+//! * [`protocol`] defines [`protocol::Metadata`] and
+//!   [`protocol::TransferKind`].
 //! * [`crypto`] contains key agreement, HKDF, AEAD sealing, and AEAD opening.
 //! * [`network`] binds QUIC endpoints and builds ephemeral TLS/transport
 //!   config.
 //! * [`discovery`] handles pairing-code broadcast and discovery.
-//! * [`tar`] packages directories and safely extracts directory payloads.
 //! * [`local_addr`] exposes local IPv4 helpers for UI and discovery.
 //! * [`error`] defines [`EngineError`].
 //!
@@ -174,10 +173,19 @@ pub mod discovery;
 pub mod error;
 pub mod local_addr;
 pub mod network;
-pub mod pool;
 pub mod protocol;
 pub mod runner;
+
+// Unstable internals: technically reachable (sealing them would be a
+// semver-breaking change against 6.0.x), but hidden from docs and NOT covered
+// by the semver guarantee. They may change in any minor release; the stable
+// surface is `runner` plus the supporting types re-exported at the crate
+// root. Do not depend on these modules.
+#[doc(hidden)]
+pub mod pool;
+#[doc(hidden)]
 pub mod tar;
+#[doc(hidden)]
 pub mod transfer;
 
 pub use discovery::{BroadcasterGuard, DiscoveredPeer};

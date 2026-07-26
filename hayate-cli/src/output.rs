@@ -711,8 +711,23 @@ pub fn scan_progress_bar(total_hosts: u64) -> ProgressBar {
 
 /// Run a closure while the shared MultiProgress is suspended (all bars hidden).
 /// Use this around interactive prompts so the prompt can draw normally.
+///
+/// Also raises [`prompt_active`] so the ESC/q key listener backs off while a
+/// prompt owns the terminal's raw mode — both enabling raw mode at once makes
+/// key events unreliable.
 pub fn suspend_for_prompt<R>(f: impl FnOnce() -> R) -> R {
-    multi().suspend(f)
+    PROMPT_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
+    let result = multi().suspend(f);
+    PROMPT_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+    result
+}
+
+static PROMPT_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// True while an interactive prompt is in control of the terminal.
+#[inline]
+pub fn prompt_active() -> bool {
+    PROMPT_ACTIVE.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

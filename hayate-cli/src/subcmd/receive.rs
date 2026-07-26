@@ -4,15 +4,16 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use hayate::protocol::{Metadata, TransferKind};
-use hayate::{EngineError, HayateReceiver, TransferStage, is_benign_peer_close, local_addr};
+use hayate::{EngineError, HayateReceiver, ReceiveOutcome, TransferStage, is_benign_peer_close};
 use indicatif::ProgressBar;
 
 use crate::cli::ReceiveArgs;
-use crate::{output, policy};
+use crate::ui::{PathCompleter, TransferUi};
+use crate::{history, output};
 
 pub async fn run(args: ReceiveArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
     // ESC / q listener — polls tty in raw mode, exits cleanly via cancelled flag.
@@ -26,6 +27,106 @@ pub async fn run(args: ReceiveArgs, cancelled: Arc<AtomicBool>) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Shared stage handling
+// ---------------------------------------------------------------------------
+
+/// Renders the stages both receive paths handle identically (offer card,
+/// resume notice, transfer bar). Returns `false` for unhandled stages so the
+/// caller can deal with its own connection-lifecycle stages.
+fn handle_common_stage(stage: &TransferStage, ui: &TransferUi) -> bool {
+    match stage {
+        TransferStage::Handshaking => {
+            output::stage("handshake", "negotiating cipher…");
+        },
+        TransferStage::Offer { meta, cipher_id, peer } => {
+            let kind =
+                if meta.transfer_type == TransferKind::Directory { "directory" } else { "file" };
+            output::print_transfer_offer(
+                &meta.filename,
+                meta.total_size,
+                kind,
+                *peer,
+                output::cipher_name(*cipher_id),
+                &meta.hash_algo,
+            );
+        },
+        TransferStage::Resuming { offset } => {
+            output::stage("resume", format!("continuing from {}", output::format_bytes(*offset)));
+            ui.set_resume_offset(*offset);
+        },
+        TransferStage::Transferring { filename, total_size } => {
+            output::stage("receive", filename);
+            ui.start_transfer("receive", *total_size);
+        },
+        _ => return false,
+    }
+    true
+}
+
+/// Success path shared by both receive modes: summary, integrity report,
+/// history.
+fn report_receive_success(outcome: &ReceiveOutcome, ui: &TransferUi) {
+    ui.finish_progress(outcome.meta.total_size);
+    output::key_value("output", outcome.path.display());
+    let elapsed = ui.elapsed();
+    output::print_transfer_summary(
+        &outcome.meta.filename,
+        outcome.meta.total_size,
+        elapsed,
+        &outcome.checksum,
+        false,
+        output::cipher_name(outcome.cipher_id),
+    );
+    output::integrity_verified(&outcome.checksum);
+    history::record_transfer(
+        "receive",
+        &outcome.meta.filename,
+        outcome.meta.total_size,
+        elapsed,
+        &outcome.checksum,
+        output::cipher_name(outcome.cipher_id),
+        &outcome.peer.to_string(),
+        Some(outcome.path.display().to_string()),
+    );
+}
+
+/// Builds the consent closure shared by both receive modes: auto-accept
+/// resolves directly, otherwise suspend bars and prompt.
+fn make_consent(
+    auto_accept: bool,
+    output_dir: PathBuf,
+    prompt_error: Arc<Mutex<Option<anyhow::Error>>>,
+) -> impl FnOnce(&Metadata, SocketAddr) -> Option<PathBuf> {
+    move |meta, peer| {
+        if auto_accept {
+            return Some(resolve_output(&output_dir, meta));
+        }
+        match output::suspend_for_prompt(|| prompt_accept(meta, peer, &output_dir)) {
+            Ok(path) => path,
+            Err(e) => {
+                *prompt_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(e);
+                None
+            },
+        }
+    }
+}
+
+/// Builds the progress closure shared by both receive modes.
+fn make_progress(ui: &TransferUi) -> impl FnMut(u64) -> Result<(), EngineError> + Send + 'static {
+    let ui = ui.clone();
+    move |bytes| {
+        ui.check_cancelled()?;
+        ui.set_position(bytes);
+        Ok(())
+    }
+}
+
+/// Surfaces a stored prompt error, if any, as the real failure.
+fn take_prompt_error(prompt_error: &Arc<Mutex<Option<anyhow::Error>>>) -> Option<anyhow::Error> {
+    prompt_error.lock().unwrap_or_else(|e| e.into_inner()).take()
+}
+
+// ---------------------------------------------------------------------------
 // Pairing-code mode (one-shot)
 // ---------------------------------------------------------------------------
 
@@ -34,19 +135,10 @@ async fn run_pairing(code: String, args: ReceiveArgs, cancelled: Arc<AtomicBool>
         bail!("cancelled");
     }
 
-    let spinner: Arc<Mutex<Option<ProgressBar>>> = Arc::new(Mutex::new(None));
-    let progress: Arc<Mutex<Option<ProgressBar>>> = Arc::new(Mutex::new(None));
-    let no_progress = args.no_progress || policy::get().no_progress();
+    let ui = TransferUi::new(Arc::clone(&cancelled), args.no_progress);
     let auto_accept = args.auto_accept;
     let output_dir = args.output.clone();
-    let transfer_start = Arc::new(Mutex::new(None));
     let prompt_error: Arc<Mutex<Option<anyhow::Error>>> = Arc::new(Mutex::new(None));
-
-    let spinner_s = Arc::clone(&spinner);
-    let progress_s = Arc::clone(&progress);
-    let cancelled_stage = Arc::clone(&cancelled);
-    let cancelled_progress = Arc::clone(&cancelled);
-    let transfer_start_stage = Arc::clone(&transfer_start);
 
     let mut builder = HayateReceiver::new().code(code).resume(args.resume);
     if auto_accept {
@@ -56,141 +148,57 @@ async fn run_pairing(code: String, args: ReceiveArgs, cancelled: Arc<AtomicBool>
     let outcome = builder
         .receive_with(
             &output_dir,
-            move |stage| {
-                if cancelled_stage.load(Ordering::SeqCst) {
-                    return Err(EngineError::Cancelled("transfer cancelled by user".into()));
-                }
-                match stage {
-                    TransferStage::Discovering { code } => {
-                        output::stage("pairing", format!("scanning for code \"{code}\""));
-                        if !no_progress {
-                            *spinner_s.lock().unwrap() = Some(output::spinner(
-                                "Discovering",
-                                "listening for sender broadcast…",
-                            ));
-                        }
-                    },
-                    TransferStage::Connecting { peer } => {
-                        clear_spinner(&spinner_s);
-                        output::stage("connect", format!("dialing sender at {peer}"));
-                        if !no_progress {
-                            *spinner_s.lock().unwrap() =
-                                Some(output::spinner("Connecting", &peer.to_string()));
-                        }
-                    },
-                    TransferStage::Connected { peer } => {
-                        clear_spinner(&spinner_s);
-                        output::ok(&format!("Connected to {peer}"));
-                    },
-                    TransferStage::Handshaking => {
-                        output::stage("handshake", "negotiating cipher…");
-                    },
-                    TransferStage::Offer { meta, cipher_id, peer } => {
-                        let kind = if meta.transfer_type == TransferKind::Directory {
-                            "directory"
-                        } else {
-                            "file"
-                        };
-                        output::print_transfer_offer(
-                            &meta.filename,
-                            meta.total_size,
-                            kind,
-                            peer,
-                            output::cipher_name(cipher_id),
-                            &meta.hash_algo,
-                        );
-                    },
-                    TransferStage::Transferring { filename, total_size } => {
-                        *transfer_start_stage.lock().unwrap_or_else(|e| e.into_inner()) =
-                            Some(Instant::now());
-                        output::stage("receive", &filename);
-                        if !no_progress && total_size > 0 {
-                            *progress_s.lock().unwrap() =
-                                Some(output::transfer_progress_bar("receive", total_size));
-                        }
-                    },
-                    TransferStage::Resuming { offset } => {
-                        output::stage(
-                            "resume",
-                            format!("continuing from {}", output::format_bytes(offset)),
-                        );
-                    },
-                    TransferStage::Finishing
-                    | TransferStage::WaitingForPeer
-                    | TransferStage::Pairing { .. }
-                    | TransferStage::Ready { .. } => {},
-                    _ => {},
-                }
-                Ok(())
-            },
             {
-                let output_dir = output_dir.clone();
-                let prompt_error = Arc::clone(&prompt_error);
-                move |meta, peer| {
-                    if auto_accept {
-                        return Some(resolve_output(&output_dir, meta));
+                let ui = ui.clone();
+                move |stage| {
+                    ui.check_cancelled()?;
+                    if handle_common_stage(&stage, &ui) {
+                        return Ok(());
                     }
-                    match output::suspend_for_prompt(|| prompt_accept(meta, peer, &output_dir)) {
-                        Ok(path) => path,
-                        Err(e) => {
-                            *prompt_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(e);
-                            None
+                    match stage {
+                        TransferStage::Discovering { code } => {
+                            output::stage("pairing", format!("scanning for code \"{code}\""));
+                            ui.spinner("Discovering", "listening for sender broadcast…");
                         },
-                    }
-                }
-            },
-            {
-                let progress = Arc::clone(&progress);
-                move |bytes| {
-                    if cancelled_progress.load(Ordering::SeqCst) {
-                        return Err(EngineError::Cancelled("transfer cancelled by user".into()));
-                    }
-                    if let Some(pb) = progress.lock().unwrap().as_ref() {
-                        output::set_transfer_position(pb, bytes);
+                        TransferStage::Connecting { peer } => {
+                            ui.clear_spinner();
+                            output::stage("connect", format!("dialing sender at {peer}"));
+                            ui.spinner("Connecting", &peer.to_string());
+                        },
+                        TransferStage::Connected { peer } => {
+                            ui.clear_spinner();
+                            output::ok(&format!("Connected to {peer}"));
+                        },
+                        _ => {},
                     }
                     Ok(())
                 }
             },
+            make_consent(auto_accept, output_dir.clone(), Arc::clone(&prompt_error)),
+            make_progress(&ui),
         )
         .await;
 
-    clear_spinner(&spinner);
+    ui.clear_spinner();
 
     match outcome {
         Ok(outcome) => {
-            if let Some(pb) = progress.lock().unwrap().take() {
-                output::finish_transfer_progress(&pb, outcome.meta.total_size);
-            }
-            output::key_value("output", outcome.path.display());
-            let elapsed = transfer_start
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .map_or(0.0, |start| start.elapsed().as_secs_f64());
-            output::print_transfer_summary(
-                &outcome.meta.filename,
-                outcome.meta.total_size,
-                elapsed,
-                &outcome.checksum,
-                false,
-                output::cipher_name(outcome.cipher_id),
-            );
-            output::integrity_verified(&outcome.checksum);
-            record_receive_history(&outcome, elapsed);
+            report_receive_success(&outcome, &ui);
             Ok(())
         },
         Err(EngineError::TransferRejected) => {
-            if let Some(error) = prompt_error.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            if let Some(error) = take_prompt_error(&prompt_error) {
                 return Err(error).context("receive prompt failed");
             }
             output::warn("Transfer rejected.");
             Ok(())
         },
         Err(EngineError::Cancelled(_)) => {
-            clear_progress(&progress);
+            ui.clear_all();
             bail!("cancelled");
         },
         Err(e) => {
-            clear_progress(&progress);
+            ui.clear_all();
             Err(e).context("receive failed")
         },
     }
@@ -211,7 +219,7 @@ async fn run_listen(args: ReceiveArgs, cancelled: Arc<AtomicBool>) -> Result<()>
 
     if bind_addr.ip().is_unspecified() {
         output::print_bound(format!("0.0.0.0:{local_port}"));
-        let ips = local_addr::local_ipv4s();
+        let ips = hayate::local_addr::local_ipv4s();
         if !ips.is_empty() {
             let addrs_with_names: Vec<_> = ips
                 .into_iter()
@@ -233,11 +241,10 @@ async fn run_listen(args: ReceiveArgs, cancelled: Arc<AtomicBool>) -> Result<()>
         output::print_bound(listener.local_addr()?);
     }
 
-    let no_progress = args.no_progress || policy::get().no_progress();
     let auto_accept = args.auto_accept;
     let output_dir = args.output.clone();
 
-    let waiting: Arc<Mutex<Option<ProgressBar>>> = Arc::new(Mutex::new(if no_progress {
+    let waiting: Arc<Mutex<Option<ProgressBar>>> = Arc::new(Mutex::new(if args.no_progress {
         None
     } else {
         Some(output::spinner("Waiting", "for incoming connection…"))
@@ -248,147 +255,54 @@ async fn run_listen(args: ReceiveArgs, cancelled: Arc<AtomicBool>) -> Result<()>
             break;
         }
 
-        let progress: Arc<Mutex<Option<ProgressBar>>> = Arc::new(Mutex::new(None));
-        let progress_s = Arc::clone(&progress);
-        let waiting_s = Arc::clone(&waiting);
-        let transfer_start = Arc::new(Mutex::new(None));
+        let ui = TransferUi::new(Arc::clone(&cancelled), args.no_progress);
         let prompt_error: Arc<Mutex<Option<anyhow::Error>>> = Arc::new(Mutex::new(None));
-        let transfer_start_stage = Arc::clone(&transfer_start);
 
         let result = listener
             .try_accept_one(
                 Duration::from_millis(500),
                 &output_dir,
                 {
-                    let cancelled = Arc::clone(&cancelled);
+                    let ui = ui.clone();
+                    let waiting = Arc::clone(&waiting);
                     move |stage| {
-                        if cancelled.load(Ordering::SeqCst) {
-                            return Err(EngineError::Cancelled(
-                                "transfer cancelled by user".into(),
-                            ));
+                        ui.check_cancelled()?;
+                        if handle_common_stage(&stage, &ui) {
+                            return Ok(());
                         }
-                        match stage {
-                            TransferStage::WaitingForPeer => {},
-                            TransferStage::Connected { peer } => {
-                                clear_spinner(&waiting_s);
-                                output::ok(&format!("Connection from {peer}"));
-                            },
-                            TransferStage::Handshaking => {
-                                output::stage("handshake", "negotiating cipher…");
-                            },
-                            TransferStage::Offer { meta, cipher_id, peer } => {
-                                let kind = if meta.transfer_type == TransferKind::Directory {
-                                    "directory"
-                                } else {
-                                    "file"
-                                };
-                                output::print_transfer_offer(
-                                    &meta.filename,
-                                    meta.total_size,
-                                    kind,
-                                    peer,
-                                    output::cipher_name(cipher_id),
-                                    &meta.hash_algo,
-                                );
-                            },
-                            TransferStage::Transferring { filename, total_size } => {
-                                *transfer_start_stage.lock().unwrap_or_else(|e| e.into_inner()) =
-                                    Some(Instant::now());
-                                output::stage("receive", &filename);
-                                if !no_progress && total_size > 0 {
-                                    *progress_s.lock().unwrap() =
-                                        Some(output::transfer_progress_bar("receive", total_size));
-                                }
-                            },
-                            TransferStage::Resuming { offset } => {
-                                output::stage(
-                                    "resume",
-                                    format!("continuing from {}", output::format_bytes(offset)),
-                                );
-                            },
-                            TransferStage::Finishing
-                            | TransferStage::Connecting { .. }
-                            | TransferStage::Pairing { .. }
-                            | TransferStage::Discovering { .. }
-                            | TransferStage::Ready { .. } => {},
-                            _ => {},
+                        if let TransferStage::Connected { peer } = stage {
+                            clear_spinner(&waiting);
+                            output::ok(&format!("Connection from {peer}"));
                         }
                         Ok(())
                     }
                 },
-                {
-                    let output_dir = output_dir.clone();
-                    let prompt_error = Arc::clone(&prompt_error);
-                    move |meta, peer| {
-                        if auto_accept {
-                            return Some(resolve_output(&output_dir, meta));
-                        }
-                        match output::suspend_for_prompt(|| prompt_accept(meta, peer, &output_dir))
-                        {
-                            Ok(path) => path,
-                            Err(e) => {
-                                *prompt_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(e);
-                                None
-                            },
-                        }
-                    }
-                },
-                {
-                    let cancelled = Arc::clone(&cancelled);
-                    let progress = Arc::clone(&progress);
-                    move |bytes| {
-                        if cancelled.load(Ordering::SeqCst) {
-                            return Err(EngineError::Cancelled(
-                                "transfer cancelled by user".into(),
-                            ));
-                        }
-                        if let Some(pb) = progress.lock().unwrap().as_ref() {
-                            output::set_transfer_position(pb, bytes);
-                        }
-                        Ok(())
-                    }
-                },
+                make_consent(auto_accept, output_dir.clone(), Arc::clone(&prompt_error)),
+                make_progress(&ui),
             )
             .await;
 
         match result {
             Ok(None) => continue,
             Ok(Some(outcome)) => {
-                if let Some(pb) = progress.lock().unwrap().take() {
-                    output::finish_transfer_progress(&pb, outcome.meta.total_size);
-                }
-                output::key_value("output", outcome.path.display());
-                let elapsed = transfer_start
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .map_or(0.0, |start| start.elapsed().as_secs_f64());
-                output::print_transfer_summary(
-                    &outcome.meta.filename,
-                    outcome.meta.total_size,
-                    elapsed,
-                    &outcome.checksum,
-                    false,
-                    output::cipher_name(outcome.cipher_id),
-                );
-                output::integrity_verified(&outcome.checksum);
-                record_receive_history(&outcome, elapsed);
+                report_receive_success(&outcome, &ui);
                 if args.once {
                     break;
                 }
-                respawn_waiting(no_progress, &waiting);
+                respawn_waiting(args.no_progress, &waiting);
                 continue;
             },
             Err(EngineError::TransferRejected) => {
-                clear_progress(&progress);
-                if let Some(error) = prompt_error.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                ui.clear_all();
+                if let Some(error) = take_prompt_error(&prompt_error) {
                     return Err(error).context("receive prompt failed");
                 }
                 output::warn("Transfer rejected.");
-                respawn_waiting(no_progress, &waiting);
+                respawn_waiting(args.no_progress, &waiting);
                 continue;
             },
             Err(EngineError::Cancelled(_)) => {
-                clear_progress(&progress);
+                ui.clear_all();
                 output::err("Transfer cancelled");
                 bail!("cancelled");
             },
@@ -397,16 +311,16 @@ async fn run_listen(args: ReceiveArgs, cancelled: Arc<AtomicBool>) -> Result<()>
                 break;
             },
             Err(e) if is_benign_peer_close(&e) => {
-                respawn_waiting(no_progress, &waiting);
+                respawn_waiting(args.no_progress, &waiting);
                 continue;
             },
             Err(e) => {
-                clear_progress(&progress);
-                if let Some(error) = prompt_error.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                ui.clear_all();
+                if let Some(error) = take_prompt_error(&prompt_error) {
                     return Err(error).context("receive prompt failed");
                 }
                 output::err(&format!("{e}"));
-                respawn_waiting(no_progress, &waiting);
+                respawn_waiting(args.no_progress, &waiting);
                 continue;
             },
         }
@@ -425,74 +339,12 @@ fn clear_spinner(spinner: &Arc<Mutex<Option<ProgressBar>>>) {
     }
 }
 
-fn clear_progress(progress: &Arc<Mutex<Option<ProgressBar>>>) {
-    if let Some(pb) = progress.lock().unwrap_or_else(|e| e.into_inner()).take() {
-        pb.finish_and_clear();
-    }
-}
-
-/// Re-creates a "Waiting" spinner after handling a failed connection.
+/// Re-creates a "Waiting" spinner after handling a connection.
 fn respawn_waiting(no_progress: bool, waiting: &Arc<Mutex<Option<ProgressBar>>>) {
     clear_spinner(waiting);
     if !no_progress {
         *waiting.lock().unwrap_or_else(|e| e.into_inner()) =
             Some(crate::output::spinner("Waiting", "for incoming connection…"));
-    }
-}
-
-#[derive(Clone)]
-struct DirCompleter;
-
-impl inquire::Autocomplete for DirCompleter {
-    fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, inquire::CustomUserError> {
-        let path = std::path::Path::new(input);
-        let (dir_path, prefix) = if input.ends_with('/') || input.is_empty() {
-            (path, "")
-        } else {
-            (
-                path.parent().unwrap_or_else(|| std::path::Path::new("")),
-                path.file_name().and_then(|s| s.to_str()).unwrap_or(""),
-            )
-        };
-
-        let dir_to_read =
-            if dir_path.as_os_str().is_empty() { std::path::Path::new(".") } else { dir_path };
-
-        let mut suggestions = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(dir_to_read) {
-            for entry in entries.flatten() {
-                let Ok(file_type) = entry.file_type() else {
-                    continue;
-                };
-                if !file_type.is_dir() {
-                    continue;
-                }
-                let name = entry.file_name();
-                let Some(name_str) = name.to_str() else {
-                    continue;
-                };
-                if !name_str.starts_with(prefix) {
-                    continue;
-                }
-
-                let full_path = dir_path.join(name_str);
-                let mut path_str = full_path.to_string_lossy().into_owned();
-                if !path_str.ends_with('/') {
-                    path_str.push('/');
-                }
-                suggestions.push(path_str);
-            }
-        }
-
-        Ok(suggestions)
-    }
-
-    fn get_completion(
-        &mut self,
-        _input: &str,
-        highlighted_suggestion: Option<String>,
-    ) -> Result<inquire::autocompletion::Replacement, inquire::CustomUserError> {
-        Ok(highlighted_suggestion)
     }
 }
 
@@ -520,7 +372,7 @@ fn prompt_accept(
     if accept {
         let dest_dir = match inquire::Text::new("   Save to directory")
             .with_default(&default_dir.to_string_lossy())
-            .with_autocomplete(DirCompleter)
+            .with_autocomplete(PathCompleter::dirs_only())
             .prompt()
         {
             Ok(val) => val,
@@ -547,28 +399,6 @@ fn resolve_output(output_dir: &std::path::Path, meta: &Metadata) -> PathBuf {
     output_dir.join(name)
 }
 
-/// Appends a completed receive to the local history log (best-effort).
-fn record_receive_history(outcome: &hayate::ReceiveOutcome, elapsed: f64) {
-    if let Err(e) = crate::history::record(crate::history::HistoryEntry {
-        ts: 0,
-        direction: "receive".to_owned(),
-        filename: outcome.meta.filename.clone(),
-        size: outcome.meta.total_size,
-        elapsed_secs: elapsed,
-        speed_bps: if elapsed > f64::EPSILON {
-            (outcome.meta.total_size as f64 / elapsed) as u64
-        } else {
-            outcome.meta.total_size
-        },
-        checksum: outcome.checksum.clone(),
-        cipher: output::cipher_name(outcome.cipher_id).to_owned(),
-        peer: outcome.peer.to_string(),
-        path: Some(outcome.path.display().to_string()),
-    }) {
-        output::warn(&format!("could not record history: {e}"));
-    }
-}
-
 // ── ESC / q listener ─────────────────────────────────────────────────────
 
 fn spawn_esc_listener(cancelled: Arc<AtomicBool>) {
@@ -577,6 +407,11 @@ fn spawn_esc_listener(cancelled: Arc<AtomicBool>) {
         loop {
             if cancelled.load(Ordering::SeqCst) {
                 break;
+            }
+            // Prompts own raw mode while active; don't fight inquire.
+            if output::prompt_active() {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                continue;
             }
             if crossterm::terminal::enable_raw_mode().is_ok() {
                 if poll(std::time::Duration::from_millis(0)).is_ok_and(|b| b)

@@ -1,12 +1,14 @@
 //! Hayate CLI application.
 
 mod cli;
+mod cli_tests;
 mod exit_code;
 mod history;
 mod output;
 mod peers;
 mod policy;
 mod subcmd;
+mod ui;
 mod words;
 
 use std::process::{ExitCode, Termination};

@@ -66,6 +66,18 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+  semver:
+    name: Semver Compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+      - uses: obi1kenobi/cargo-semver-checks-action@3688bfd1a2883612e2c757134eb0422e6c12ee33 # v2.8
+        with:
+          package: hayate
+
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
