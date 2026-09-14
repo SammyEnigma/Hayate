@@ -12,8 +12,8 @@ rust-version = "1.96"
 
 [workspace.dependencies]
 # Completion-based async I/O and QUIC.
-compio = { version = "0.19.1", features = ["fs", "macros", "net", "runtime", "time", "signal"] }
-compio-quic = { version = "0.8.0", default-features = false, features = ["ring"] }
+compio = { version = "0.19.2", features = ["fs", "macros", "net", "runtime", "time", "signal"] }
+compio-quic = { version = "0.8.2", default-features = false, features = ["ring"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 
 # QUIC protocol state machine (no tokio)
